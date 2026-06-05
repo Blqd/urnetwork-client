@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=URnetwork VPN
+Comment=Peer-to-peer VPN client
+Exec=/usr/bin/python3 /home/user/Документы/urnetwork-client/gui/urnetwork-gui.py
+Icon=network-vpn
+Terminal=false
+Categories=Network;VPN;
