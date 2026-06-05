@@ -1,0 +1,4 @@
+build/
+*.tar.gz
+go.work
+go.work.sum
