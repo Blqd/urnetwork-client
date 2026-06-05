@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$(cd "$SCRIPT_DIR/../build" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/urnetwork"
-JWT_FILE="$HOME/.urnetwork/jwt"
+MODE_FILE="$CONFIG_DIR/mode"
+AUTH_FILE="$CONFIG_DIR/auth"
+PID_FILE_SOCKS="$CONFIG_DIR/socks.pid"
+PID_FILE_VPN="$CONFIG_DIR/vpn.pid"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,37 +22,41 @@ usage() {
 URnetwork VPN Client for Ubuntu
 
 Usage:
-    $(basename "$0") socks   [--city <city>] [--country <country>] [--region <region>]
-    $(basename "$0") vpn     [--city <city>] [--country <country>] [--region <region>]
-    $(basename "$0") register <email> <password>
-    $(basename "$0") verify  <code>
-    $(basename "$0") list-locations
-    $(basename "$0") status
-    $(basename "$0") stop
+    $(basename "$0") on                     # включить VPN (последний режим)
+    $(basename "$0") off                    # выключить
+    $(basename "$0") toggle                 # переключить вкл/выкл
+    $(basename "$0") socks  [опции]          # SOCKS5 прокси
+    $(basename "$0") vpn    [опции]          # полный TUN VPN
+    $(basename "$0") register <email> <pass> # регистрация
+    $(basename "$0") verify  <code>          # верификация email
+    $(basename "$0") list-locations          # список доступных стран
+    $(basename "$0") status                  # статус
 
-Modes:
-    socks           Start SOCKS5 proxy on :9999 (app-level proxy)
-    vpn             Start full TUN VPN (routes ALL system traffic)
+Опции для socks/vpn:
+    --city <city>       Выбрать город
+    --country <country> Выбрать страну
+    --region <region>   Выбрать регион
 
-Examples:
-    $(basename "$0") register user@example.com mypassword
+Примеры:
+    $(basename "$0") register user@example.com mypass
     $(basename "$0") verify 123456
+    $(basename "$0") on
+    $(basename "$0") off
     $(basename "$0") socks --country Netherlands
-    $(basename "$0") vpn --city Amsterdam
+    $(basename "$0") vpn --city "New York"
 EOF
     exit 0
 }
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${YELLOW}⚠  This command requires root. Re-running with sudo...${NC}"
         exec sudo "$0" "$@"
     fi
 }
 
 load_credentials() {
-    if [[ -f "$CONFIG_DIR/auth" ]]; then
-        source "$CONFIG_DIR/auth"
+    if [[ -f "$AUTH_FILE" ]]; then
+        source "$AUTH_FILE"
     fi
     if [[ -z "${USER_AUTH:-}" || -z "${PASSWORD:-}" ]]; then
         echo -e "${RED}Credentials not found. Run '$(basename "$0") register <email> <password>' first.${NC}"
@@ -57,24 +64,114 @@ load_credentials() {
     fi
 }
 
+is_running() {
+    [[ -f "$PID_FILE_SOCKS" ]] && kill -0 "$(cat "$PID_FILE_SOCKS")" 2>/dev/null && return 0
+    [[ -f "$PID_FILE_VPN" ]] && kill -0 "$(cat "$PID_FILE_VPN")" 2>/dev/null && return 0
+    return 1
+}
+
+save_pid() {
+    local mode="$1" pid="$2"
+    case "$mode" in
+        socks) echo "$pid" > "$PID_FILE_SOCKS" ;;
+        vpn)   echo "$pid" > "$PID_FILE_VPN" ;;
+    esac
+    echo "$mode" > "$MODE_FILE"
+}
+
+clean_pid() {
+    rm -f "$PID_FILE_SOCKS" "$PID_FILE_VPN"
+}
+
 case "${1:-help}" in
+    on)
+        load_credentials
+        if [[ -f "$MODE_FILE" ]]; then
+            LAST_MODE="$(cat "$MODE_FILE")"
+        else
+            LAST_MODE="socks"
+        fi
+        echo -e "${CYAN}▶  Starting $LAST_MODE...${NC}"
+        case "$LAST_MODE" in
+            socks)
+                "$BUILD_DIR/socksproxy" \
+                    --user-auth "$USER_AUTH" \
+                    --password "$PASSWORD" \
+                    "${@:2}" &
+                PID=$!
+                save_pid socks $PID
+                echo -e "${GREEN}✓ SOCKS5 proxy running on :9999 (pid $PID)${NC}"
+                wait $PID
+                clean_pid
+                ;;
+            vpn)
+                require_root "$@"
+                "$BUILD_DIR/urnetwork-vpn" \
+                    --user-auth "$USER_AUTH" \
+                    --password "$PASSWORD" \
+                    "${@:2}" &
+                PID=$!
+                save_pid vpn $PID
+                echo -e "${GREEN}✓ VPN running (pid $PID)${NC}"
+                wait $PID
+                clean_pid
+                ;;
+        esac
+        ;;
+
+    off|stop)
+        echo -e "${YELLOW}⏹  Stopping...${NC}"
+        if [[ -f "$PID_FILE_SOCKS" ]]; then
+            kill "$(cat "$PID_FILE_SOCKS")" 2>/dev/null && echo "  ✓ SOCKS5 stopped" || true
+        fi
+        if [[ -f "$PID_FILE_VPN" ]]; then
+            kill "$(cat "$PID_FILE_VPN")" 2>/dev/null && echo "  ✓ VPN stopped" || true
+        fi
+        pkill -f "socksproxy" 2>/dev/null || true
+        pkill -f "urnetwork-vpn" 2>/dev/null || true
+        if ip link show urnetwork &>/dev/null 2>&1; then
+            sudo ip route del default dev urnetwork metric 10 2>/dev/null || true
+            sudo ip link set urnetwork down 2>/dev/null || true
+        fi
+        clean_pid
+        echo -e "${GREEN}✓ Stopped${NC}"
+        ;;
+
+    toggle)
+        if is_running; then
+            exec "$0" off
+        else
+            exec "$0" on "${@:2}"
+        fi
+        ;;
+
     socks)
         load_credentials
         shift
-        exec "$BUILD_DIR/socksproxy" \
+        "$BUILD_DIR/socksproxy" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
-            "$@"
+            "$@" &
+        PID=$!
+        save_pid socks $PID
+        echo -e "${GREEN}✓ SOCKS5 proxy on :9999 (pid $PID)${NC}"
+        wait $PID
+        clean_pid
         ;;
 
     vpn)
         load_credentials
         require_root "$@"
         shift
-        exec "$BUILD_DIR/urnetwork-vpn" \
+        "$BUILD_DIR/urnetwork-vpn" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
-            "$@"
+            "$@" &
+        PID=$!
+        save_pid vpn $PID
+        echo -e "${GREEN}✓ VPN started (pid $PID)${NC}"
+        wait $PID
+        clean_pid
         ;;
 
     register)
@@ -83,27 +180,35 @@ case "${1:-help}" in
             exit 1
         fi
         EMAIL="$2"
-        PASSWORD="$3"
+        PASSWORD_VAL="$3"
 
         echo -e "${CYAN}Registering with URnetwork...${NC}"
+        PBIN=""
         if command -v urnetwork-provider &>/dev/null; then
-            urnetwork-provider auth "$EMAIL" "$PASSWORD"
+            PBIN="$(which urnetwork-provider)"
+        elif [[ -f "$BUILD_DIR/urnetwork-provider" ]]; then
+            PBIN="$BUILD_DIR/urnetwork-provider"
         else
-            echo -e "${YELLOW}Provider binary not found. Installing...${NC}"
+            echo -e "${YELLOW}Downloading provider binary...${NC}"
             curl -sL "https://github.com/urnetwork/connect/releases/download/v2026.3.23-895075980/urnetwork-provider-2026.3.23-895075980.tar.gz" \
                 -o /tmp/urnetwork-provider.tar.gz
-            tar -xzf /tmp/urnetwork-provider.tar.gz -C "$BUILD_DIR"
+            tar -xzf /tmp/urnetwork-provider.tar.gz -C "$BUILD_DIR" 2>/dev/null || \
+                tar -xzf /tmp/urnetwork-provider.tar.gz -C /tmp && \
+                cp /tmp/urnetwork-provider "$BUILD_DIR/"
             chmod +x "$BUILD_DIR/urnetwork-provider" 2>/dev/null || true
-            "$BUILD_DIR/urnetwork-provider" auth "$EMAIL" "$PASSWORD"
+            PBIN="$BUILD_DIR/urnetwork-provider"
         fi
 
-        cat > "$CONFIG_DIR/auth" <<-EOF
+        "$PBIN" auth --user_auth="$EMAIL" --password="$PASSWORD_VAL" 2>&1 || \
+            echo -e "${YELLOW}Account may already exist or need API registration.${NC}"
+
+        cat > "$AUTH_FILE" <<-EOF
 USER_AUTH='$EMAIL'
-PASSWORD='$PASSWORD'
+PASSWORD='$PASSWORD_VAL'
 EOF
-        chmod 600 "$CONFIG_DIR/auth"
-        echo -e "${GREEN}Credentials saved to $CONFIG_DIR/auth${NC}"
-        echo -e "${YELLOW}Check your email for a verification code, then run:${NC}"
+        chmod 600 "$AUTH_FILE"
+        echo -e "${GREEN}✓ Credentials saved${NC}"
+        echo -e "${YELLOW}Check email for verification code, then:${NC}"
         echo "  $(basename "$0") verify <code>"
         ;;
 
@@ -113,22 +218,20 @@ EOF
             exit 1
         fi
         CODE="$2"
-        if command -v urnetwork-provider &>/dev/null; then
-            urnetwork-provider auth verify "$CODE"
-        elif [[ -f "$BUILD_DIR/urnetwork-provider" ]]; then
-            "$BUILD_DIR/urnetwork-provider" auth verify "$CODE"
+        PBIN=""
+        command -v urnetwork-provider &>/dev/null && PBIN="$(which urnetwork-provider)" || PBIN="$BUILD_DIR/urnetwork-provider"
+        if [[ -f "$PBIN" ]]; then
+            "$PBIN" auth "$CODE"
+            echo -e "${GREEN}✓ Account verified!${NC}"
+            echo "  $(basename "$0") on"
         else
-            echo -e "${RED}Provider binary not found. Run '$(basename "$0") register' first.${NC}"
-            exit 1
+            echo -e "${RED}Provider binary not found. Run register first.${NC}"
         fi
-        echo -e "${GREEN}Account verified! You can now use:${NC}"
-        echo "  $(basename "$0") socks   --country <country>"
-        echo "  $(basename "$0") vpn     --city <city>"
         ;;
 
     list-locations)
         load_credentials
-        echo -e "${CYAN}Fetching available provider locations...${NC}"
+        echo -e "${CYAN}Available locations:${NC}"
         "$BUILD_DIR/socksproxy" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
@@ -136,29 +239,25 @@ EOF
         ;;
 
     status)
-        if [[ -f "$CONFIG_DIR/auth" ]]; then
-            source "$CONFIG_DIR/auth"
-            echo -e "${GREEN}✓ Credentials configured for: $USER_AUTH${NC}"
+        echo -e "${CYAN}Status:${NC}"
+        if [[ -f "$AUTH_FILE" ]]; then
+            source "$AUTH_FILE"
+            echo -e "  ${GREEN}✓${NC} Account: $USER_AUTH"
         else
-            echo -e "${YELLOW}No credentials configured.${NC}"
-            echo "  Run: $(basename "$0") register <email> <password>"
+            echo -e "  ${YELLOW}✗${NC} No credentials"
         fi
-        if ip link show urnetwork &>/dev/null 2>&1; then
-            echo -e "${GREEN}✓ VPN TUN interface is up${NC}"
+        if [[ -f "$PID_FILE_SOCKS" ]] && kill -0 "$(cat "$PID_FILE_SOCKS")" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} SOCKS5 proxy :9999 (pid $(cat "$PID_FILE_SOCKS"))"
+        else
+            echo -e "  ${YELLOW}✗${NC} SOCKS5 proxy"
         fi
-        if ss -tlnp 2>/dev/null | grep -q ":9999.*socksproxy"; then
-            echo -e "${GREEN}✓ SOCKS5 proxy running on :9999${NC}"
+        if [[ -f "$PID_FILE_VPN" ]] && kill -0 "$(cat "$PID_FILE_VPN")" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} TUN VPN (pid $(cat "$PID_FILE_VPN"))"
+        else
+            echo -e "  ${YELLOW}✗${NC} TUN VPN"
         fi
-        ;;
-
-    stop)
-        echo -e "${YELLOW}Stopping URnetwork client...${NC}"
-        pkill -f "socksproxy" 2>/dev/null && echo "  ✓ SOCKS5 proxy stopped" || echo "  No SOCKS5 proxy running"
-        pkill -f "urnetwork-vpn" 2>/dev/null && echo "  ✓ VPN stopped" || echo "  No VPN running"
-        if ip link show urnetwork &>/dev/null 2>&1; then
-            sudo ip route del default dev urnetwork 2>/dev/null || true
-            sudo ip link set urnetwork down 2>/dev/null || true
-            echo "  ✓ TUN interface cleaned up"
+        if [[ -f "$MODE_FILE" ]]; then
+            echo -e "  Mode: $(cat "$MODE_FILE")"
         fi
         ;;
 
