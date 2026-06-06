@@ -8,9 +8,11 @@ import os
 import signal
 import threading
 import re
+from datetime import datetime, timezone
 
 CONFIG_DIR = os.path.expanduser("~/.config/urnetwork")
 AUTH_FILE = os.path.join(CONFIG_DIR, "auth")
+LOG_FILE = os.path.join(CONFIG_DIR, "diagnostic.log")
 BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build"))
 SCRIPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "urnetwork-connect.sh"))
 
@@ -24,6 +26,16 @@ class URnetworkGUI:
         self.running = False
         self.connected = False
         self.verbose_log = False
+        self.log_lock = threading.Lock()
+        self.log_fp = None
+
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        try:
+            self.log_fp = open(LOG_FILE, "a", buffering=1, encoding="utf-8")
+            self._write_log_line("=== GUI started ===")
+        except OSError as e:
+            self.log_fp = None
+            print("warning: cannot open log file {}: {}".format(LOG_FILE, e))
 
         css = b"""
         window { background: #1a1b2e; }
@@ -275,11 +287,30 @@ class URnetworkGUI:
         GLib.idle_add(self._log, msg)
 
     def _log(self, msg):
+        self._write_log_line(msg)
+        self._append_log(msg)
+
+    def _append_log(self, msg):
         end = self.log_buffer.get_end_iter()
         self.log_buffer.insert(end, msg + "\n")
         mark = self.log_buffer.create_mark(None, end, False)
         self.log_view.scroll_to_mark(mark, 0, True, 0, 1)
         return False
+
+    def _write_log_line(self, msg):
+        if not self.log_fp:
+            return
+        ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        with self.log_lock:
+            self.log_fp.write("[{}] {}\n".format(ts, msg))
+
+    def _log_stream_line(self, prefix, line):
+        text = line.rstrip()
+        if not text:
+            return
+        self._write_log_line(prefix + text)
+        if self.verbose_log or not GLOG_RE.match(text) or text.startswith("VPN connected."):
+            GLib.idle_add(self._append_log, text)
 
     def parse_locations(self, text):
         countries, regions, cities = [], [], []
@@ -324,16 +355,21 @@ class URnetworkGUI:
                 env["PASSWORD"] = self.pass_entry.get_text()
                 if not env["USER_AUTH"] or not env["PASSWORD"]:
                     return
+                self._write_log_line("=== list-locations start ===")
                 proc = subprocess.Popen(
                     [SCRIPT, "list-locations"], env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True
                 )
                 out, _ = proc.communicate(timeout=30)
+                self._write_log_line("=== list-locations exit rc={} ===".format(proc.returncode))
+                for line in out.splitlines():
+                    self._log_stream_line("[locations] ", line)
                 countries, regions, cities = self.parse_locations(out)
                 if countries or cities:
                     GLib.idle_add(self.populate_locations, countries, regions, cities)
             except Exception as e:
+                self._write_log_line("list-locations error: {}".format(e))
                 GLib.idle_add(self.log, "⚠ Locations: " + str(e))
         GLib.idle_add(self.log, "⟳ Loading locations...")
         threading.Thread(target=_run, daemon=True).start()
@@ -376,6 +412,7 @@ class URnetworkGUI:
             self.log("⚠  No location set — click 'List locations' to see options, then enter Country or City")
             self.log("▶  Starting anyway (will fail without location)...")
         self.log("▶  Starting " + self.mode.upper() + "...")
+        self._write_log_line("=== start mode={} country={} city={} ===".format(self.mode, country or "-", city or "-"))
 
         self.connected = False
         self.set_connecting(True)
@@ -441,8 +478,7 @@ class URnetworkGUI:
             if text.startswith("VPN connected."):
                 self.connected = True
                 GLib.idle_add(self.set_connected, True)
-            if self.verbose_log or not GLOG_RE.match(text):
-                self.log(text)
+            self._log_stream_line("[proc] ", text)
         return True
 
     def on_process_end(self, pid, status):
@@ -453,6 +489,7 @@ class URnetworkGUI:
         self.toggle_btn.get_style_context().add_class("btn-start")
         if not self.connected:
             self.log("⚠ VPN failed to connect")
+        self._write_log_line("=== process exit pid={} status={} connected={} ===".format(pid, status, self.connected))
         self.set_connected(False)
 
     def set_connecting(self, state):
@@ -509,6 +546,10 @@ class URnetworkGUI:
 
     def on_destroy(self, window):
         self.stop()
+        self._write_log_line("=== GUI stopped ===")
+        if self.log_fp:
+            self.log_fp.close()
+            self.log_fp = None
         Gtk.main_quit()
 
 
