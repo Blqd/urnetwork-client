@@ -18,6 +18,7 @@ NC='\033[0m'
 mkdir -p "$CONFIG_DIR"
 
 TIMEOUT=""
+RETRY=3
 PARSED_ARGS=()
 SKIP_NEXT=false
 for ((i=1; i<=$#; i++)); do
@@ -29,6 +30,12 @@ for ((i=1; i<=$#; i++)); do
             TIMEOUT="${!next}"
             SKIP_NEXT=true
         fi
+    elif [[ "$arg" == "--retry" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            RETRY="${!next}"
+            SKIP_NEXT=true
+        fi
     else
         PARSED_ARGS+=("$arg")
     fi
@@ -37,6 +44,57 @@ set -- "${PARSED_ARGS[@]}"
 
 TIMEOUT_CMD=""
 [[ -n "$TIMEOUT" ]] && TIMEOUT_CMD="timeout $TIMEOUT"
+
+wait_for_port() {
+    local port="$1" max_wait="${2:-10}"
+    for ((i=1; i<=max_wait; i++)); do
+        if ss -tlnp | grep -q ":${port} "; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+run_with_retry() {
+    local mode="$1"; shift
+    local bin="$1"; shift
+    local port="${1:-}"; shift
+    local try=1 max_try="$RETRY"
+
+    while [[ $try -le $max_try ]]; do
+        [[ $try -gt 1 ]] && echo -e "${YELLOW}↻ Retry $try/$max_try...${NC}"
+        ${TIMEOUT_CMD:-} "$bin" "$@" &
+        local pid=$!
+        BG_PID=$pid
+        save_pid "$mode" $pid
+
+        if [[ -n "$port" ]]; then
+            if wait_for_port "$port" 12; then
+                echo -e "${GREEN}✓ $mode running on :$port (pid $pid)${NC}"
+                wait $pid
+                clean_pid
+                return 0
+            else
+                echo -e "${YELLOW}⚠ $mode failed to bind port $port (try $try)${NC}"
+                kill $pid 2>/dev/null || true
+                wait $pid 2>/dev/null || true
+                sleep 1
+            fi
+        else
+            echo -e "${GREEN}✓ $mode started (pid $pid)${NC}"
+            wait $pid
+            clean_pid
+            return 0
+        fi
+
+        try=$((try + 1))
+    done
+
+    echo -e "${RED}✗ $mode failed after $max_try attempts${NC}"
+    clean_pid
+    return 1
+}
 
 cleanup_bg() {
     if [[ -n "${BG_PID:-}" ]]; then
@@ -67,6 +125,7 @@ Usage:
     --country <country> Выбрать страну
     --region <region>   Выбрать регион
     --timeout <сек>     Авто-остановка через N секунд
+    --retry <N>         Кол-во попыток при ошибке (по умолч. 3)
 
 Примеры:
     $(basename "$0") register user@example.com mypass
@@ -75,7 +134,7 @@ Usage:
     $(basename "$0") off
     $(basename "$0") socks --country Netherlands
     $(basename "$0") vpn --city "New York" --timeout 120
-    $(basename "$0") socks --timeout 300
+    $(basename "$0") socks --timeout 300 --retry 5
 EOF
     exit 0
 }
@@ -84,6 +143,7 @@ require_root() {
     if [[ $EUID -ne 0 ]]; then
         local root_args=("$0")
         [[ -n "$TIMEOUT" ]] && root_args+=(--timeout "$TIMEOUT")
+        root_args+=(--retry "$RETRY")
         root_args+=("$@")
         exec sudo USER_AUTH="$USER_AUTH" PASSWORD="$PASSWORD" "${root_args[@]}"
     fi
@@ -129,30 +189,18 @@ case "${1:-help}" in
         echo -e "${CYAN}▶  Starting $LAST_MODE...${NC}"
         case "$LAST_MODE" in
             socks)
-                ${TIMEOUT_CMD:-} "$BUILD_DIR/socksproxy" \
+                run_with_retry socks "$BUILD_DIR/socksproxy" 9999 \
                     --user-auth "$USER_AUTH" \
                     --password "$PASSWORD" \
-                    "${@:2}" &
-                PID=$!
-                BG_PID=$PID
-                save_pid socks $PID
-                echo -e "${GREEN}✓ SOCKS5 proxy running on :9999 (pid $PID)${NC}"
-                wait $PID
-                clean_pid
+                    "${@:2}"
                 ;;
             vpn)
                 require_root "$@"
                 ip link delete urnetwork 2>/dev/null || true
-                ${TIMEOUT_CMD:-} "$BUILD_DIR/urnetwork-vpn" \
+                run_with_retry vpn "$BUILD_DIR/urnetwork-vpn" "" \
                     --user-auth "$USER_AUTH" \
                     --password "$PASSWORD" \
-                    "${@:2}" &
-                PID=$!
-                BG_PID=$PID
-                save_pid vpn $PID
-                echo -e "${GREEN}✓ VPN running (pid $PID)${NC}"
-                wait $PID
-                clean_pid
+                    "${@:2}"
                 ;;
         esac
         ;;
@@ -186,16 +234,10 @@ case "${1:-help}" in
     socks)
         load_credentials
         shift
-        ${TIMEOUT_CMD:-} "$BUILD_DIR/socksproxy" \
+        run_with_retry socks "$BUILD_DIR/socksproxy" 9999 \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
-            "$@" &
-        PID=$!
-        BG_PID=$PID
-        save_pid socks $PID
-        echo -e "${GREEN}✓ SOCKS5 proxy on :9999 (pid $PID)${NC}"
-        wait $PID
-        clean_pid
+            "$@"
         ;;
 
     vpn)
@@ -203,16 +245,10 @@ case "${1:-help}" in
         require_root "$@"
         ip link delete urnetwork 2>/dev/null || true
         shift
-        ${TIMEOUT_CMD:-} "$BUILD_DIR/urnetwork-vpn" \
+        run_with_retry vpn "$BUILD_DIR/urnetwork-vpn" "" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
-            "$@" &
-        PID=$!
-        BG_PID=$PID
-        save_pid vpn $PID
-        echo -e "${GREEN}✓ VPN started (pid $PID)${NC}"
-        wait $PID
-        clean_pid
+            "$@"
         ;;
 
     register)
