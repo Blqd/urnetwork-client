@@ -38,16 +38,16 @@ func initGlog() {
 }
 
 type FindLocationsArgs struct {
-	Query                    string  `json:"query"`
+	Query                     string  `json:"query"`
 	MaxDistanceFraction       float32 `json:"max_distance_fraction,omitempty"`
 	EnableMaxDistanceFraction bool    `json:"enable_max_distance_fraction,omitempty"`
 }
 
 type FindLocationsResult struct {
-	Specs     *ProviderSpecList          `json:"specs"`
-	Groups    json.RawMessage            `json:"groups"`
-	Locations *LocationResultList        `json:"locations"`
-	Devices   *LocationDeviceResultList  `json:"devices"`
+	Specs     *ProviderSpecList         `json:"specs"`
+	Groups    json.RawMessage           `json:"groups"`
+	Locations *LocationResultList       `json:"locations"`
+	Devices   *LocationDeviceResultList `json:"devices"`
 }
 
 type exportedList[T any] struct {
@@ -63,9 +63,13 @@ func (self *exportedList[T]) UnmarshalJSON(b []byte) error {
 }
 
 type ProviderSpecList struct{ exportedList[*ProviderSpec] }
-type LocationGroupResultList struct{ exportedList[*LocationGroupResult] }
+type LocationGroupResultList struct {
+	exportedList[*LocationGroupResult]
+}
 type LocationResultList struct{ exportedList[*LocationResult] }
-type LocationDeviceResultList struct{ exportedList[*LocationDeviceResult] }
+type LocationDeviceResultList struct {
+	exportedList[*LocationDeviceResult]
+}
 
 type ProviderSpec struct {
 	LocationId      *connect.Id `json:"location_id,omitempty"`
@@ -101,19 +105,19 @@ type FindProvidersResult struct {
 
 func main() {
 	cfg := struct {
-		apiURL            string
-		platformURL       string
-		userAuth          string
-		password          string
-		providerID        string
-		city              string
-		country           string
-		region            string
-		mtu               int
-		tunName           string
-		tunAddr           string
-		noRoute           bool
-		bypass            cli.StringSlice
+		apiURL      string
+		platformURL string
+		userAuth    string
+		password    string
+		providerID  string
+		city        string
+		country     string
+		region      string
+		mtu         int
+		tunName     string
+		tunAddr     string
+		noRoute     bool
+		bypass      cli.StringSlice
 	}{}
 	app := &cli.App{
 		Flags: []cli.Flag{
@@ -261,11 +265,12 @@ func main() {
 			if !cfg.noRoute {
 				bypassCIDRs := cfg.bypass.Value()
 				bypassCIDRs = append(bypassCIDRs, resolveBypassHosts(ctx)...)
-				if err := setupRouting(cfg.tunName, tunPrefix, bypassCIDRs); err != nil {
+				addedBypasses, err := setupRouting(cfg.tunName, tunPrefix, bypassCIDRs)
+				if err != nil {
 					tun.CloseTun()
 					return fmt.Errorf("setup routing failed: %w", err)
 				}
-				defer teardownRouting(cfg.tunName, tunPrefix)
+				defer teardownRouting(cfg.tunName, tunPrefix, addedBypasses)
 			}
 
 			source := connect.SourceId(clientID)
@@ -475,6 +480,7 @@ type systemTun struct {
 	name   string
 	prefix netip.Prefix
 	mtu    int
+	noPI   bool
 	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.Mutex
@@ -511,6 +517,7 @@ func createTun(name string, prefix netip.Prefix, mtu int) (*systemTun, error) {
 		name:   actualName,
 		prefix: prefix,
 		mtu:    mtu,
+		noPI:   true,
 		ctx:    ctx,
 		cancel: cancel,
 	}
@@ -564,6 +571,9 @@ func (t *systemTun) Read() ([]byte, error) {
 		}
 		packet := make([]byte, n)
 		copy(packet, buf[:n])
+		if t.noPI {
+			return packet, nil
+		}
 		return stripTunPI(packet), nil
 	}
 }
@@ -573,6 +583,9 @@ func (t *systemTun) Write(packet []byte) (int, error) {
 	defer t.mu.Unlock()
 	if t.closed {
 		return 0, errors.New("tun closed")
+	}
+	if t.noPI {
+		return unix.Write(t.fd, packet)
 	}
 	data := prependTunPI(packet)
 	return unix.Write(t.fd, data)
@@ -614,44 +627,56 @@ func runCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) error {
+func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) ([]string, error) {
 	defaultGw, err := getDefaultGateway()
 	if err != nil {
-		return fmt.Errorf("get default gateway: %w", err)
+		return nil, fmt.Errorf("get default gateway: %w", err)
 	}
 
-	localNet := netip.PrefixFrom(defaultGw, 24).Masked()
-	bypassCIDRs = append(bypassCIDRs, localNet.String())
-	bypassCIDRs = append(bypassCIDRs, defaultGw.String()+"/32")
-	bypassCIDRs = lo.Uniq(bypassCIDRs)
+	addedBypasses := selectBypassCIDRs(defaultGw, bypassCIDRs)
 
-	for _, cidr := range bypassCIDRs {
-		if err := runCmd("ip", "route", "add", cidr, "via", defaultGw.String()); err != nil {
-			if !strings.Contains(err.Error(), "EEXIST") {
-				fmt.Fprintf(os.Stderr, "warning: bypass route %s: %v\n", cidr, err)
-			}
+	for _, cidr := range addedBypasses {
+		if err := runCmd("ip", "route", "replace", cidr, "via", defaultGw.String()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: bypass route %s: %v\n", cidr, err)
 		}
 	}
 
-	if err := runCmd("ip", "addr", "add", prefix.String(), "dev", iface); err != nil {
-		if !strings.Contains(err.Error(), "EEXIST") {
-			return fmt.Errorf("add addr: %w", err)
-		}
+	if err := runCmd("ip", "addr", "replace", prefix.String(), "dev", iface); err != nil {
+		return nil, fmt.Errorf("add addr: %w", err)
 	}
 	if err := runCmd("ip", "link", "set", iface, "mtu", "1400", "up"); err != nil {
-		return fmt.Errorf("link up: %w", err)
+		return nil, fmt.Errorf("link up: %w", err)
 	}
-	if err := runCmd("ip", "route", "add", "default", "dev", iface, "metric", "10"); err != nil {
-		if !strings.Contains(err.Error(), "EEXIST") {
-			return fmt.Errorf("add default route: %w", err)
-		}
+	if err := runCmd("ip", "route", "replace", "default", "dev", iface, "metric", "10"); err != nil {
+		return nil, fmt.Errorf("add default route: %w", err)
 	}
 
-	return nil
+	return addedBypasses, nil
 }
 
-func teardownRouting(iface string, prefix netip.Prefix) {
+func selectBypassCIDRs(defaultGw netip.Addr, bypassCIDRs []string) []string {
+	bypassCIDRs = lo.Uniq(bypassCIDRs)
+	selected := make([]string, 0, len(bypassCIDRs))
+	for _, cidr := range bypassCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: bypass route %s: %v\n", cidr, err)
+			continue
+		}
+		if prefix.Addr().Is4() != defaultGw.Is4() {
+			fmt.Fprintf(os.Stderr, "warning: skipping bypass route %s for gateway %s\n", cidr, defaultGw.String())
+			continue
+		}
+		selected = append(selected, cidr)
+	}
+	return selected
+}
+
+func teardownRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) {
 	runCmd("ip", "route", "del", "default", "dev", iface, "metric", "10")
+	for _, cidr := range lo.Uniq(bypassCIDRs) {
+		runCmd("ip", "route", "del", cidr)
+	}
 	runCmd("ip", "addr", "del", prefix.String(), "dev", iface)
 	runCmd("ip", "link", "set", iface, "down")
 }

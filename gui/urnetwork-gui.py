@@ -438,7 +438,7 @@ class URnetworkGUI:
         line = source.readline()
         if line:
             text = line.rstrip()
-            if text == "VPN connected.":
+            if text.startswith("VPN connected."):
                 self.connected = True
                 GLib.idle_add(self.set_connected, True)
             if self.verbose_log or not GLOG_RE.match(text):
