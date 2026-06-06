@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/netip"
@@ -13,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
 	"github.com/samber/lo"
@@ -22,26 +25,43 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type exportedList[T any] struct {
-	values []T
+var Version string
+
+func init() {
+	initGlog()
 }
 
-func (e *exportedList[T]) Values() []T {
-	return e.values
+func initGlog() {
+	flag.Set("stderrthreshold", "INFO")
+	flag.Set("v", "3")
+	os.Stderr = os.Stdout
 }
 
 type FindLocationsArgs struct {
-	Query string `json:"query"`
+	Query                    string  `json:"query"`
 	MaxDistanceFraction       float32 `json:"max_distance_fraction,omitempty"`
 	EnableMaxDistanceFraction bool    `json:"enable_max_distance_fraction,omitempty"`
 }
 
 type FindLocationsResult struct {
 	Specs     *ProviderSpecList          `json:"specs"`
-	Groups    *LocationGroupResultList   `json:"groups"`
+	Groups    json.RawMessage            `json:"groups"`
 	Locations *LocationResultList        `json:"locations"`
 	Devices   *LocationDeviceResultList  `json:"devices"`
 }
+
+type exportedList[T any] struct {
+	values []T
+}
+
+func (self *exportedList[T]) Values() []T {
+	return self.values
+}
+
+func (self *exportedList[T]) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &self.values)
+}
+
 type ProviderSpecList struct{ exportedList[*ProviderSpec] }
 type LocationGroupResultList struct{ exportedList[*LocationGroupResult] }
 type LocationResultList struct{ exportedList[*LocationResult] }
@@ -146,6 +166,38 @@ func main() {
 			},
 		},
 		Name: "urnetwork-vpn",
+		Commands: []*cli.Command{
+			{
+				Name: "list-locations",
+				Action: func(c *cli.Context) error {
+					ctx := c.Context
+					jwt, err := login(ctx, cfg.apiURL, cfg.userAuth, cfg.password)
+					if err != nil {
+						return fmt.Errorf("login failed: %w", err)
+					}
+					locations, err := getProviderLocations(ctx, cfg.apiURL, jwt)
+					if err != nil {
+						return fmt.Errorf("get locations failed: %w", err)
+					}
+					countries := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "country" })
+					regions := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "region" })
+					cities := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "city" })
+					fmt.Println("countries:")
+					for _, c := range countries {
+						fmt.Printf("  %s\n", c.Name)
+					}
+					fmt.Println("regions:")
+					for _, r := range regions {
+						fmt.Printf("  %s\n", r.Name)
+					}
+					fmt.Println("cities:")
+					for _, c := range cities {
+						fmt.Printf("  %s\n", c.Name)
+					}
+					return nil
+				},
+			},
+		},
 		Action: func(c *cli.Context) error {
 			ctx := c.Context
 
@@ -222,6 +274,27 @@ func main() {
 				ctx,
 				generator,
 				func(source connect.TransferPath, provideMode protocol.ProvideMode, ipPath *connect.IpPath, packet []byte) {
+					if len(packet) > 0 {
+						srcIP := ""
+						dstIP := ""
+						proto := ""
+						version := packet[0] >> 4
+						if version == 4 && len(packet) >= 20 {
+							srcIP = net.IP(packet[12:16]).String()
+							dstIP = net.IP(packet[16:20]).String()
+							switch packet[9] {
+							case 6:
+								proto = "TCP"
+							case 17:
+								proto = "UDP"
+							case 1:
+								proto = "ICMP"
+							default:
+								proto = fmt.Sprintf("PROTO%d", packet[9])
+							}
+						}
+						fmt.Printf("[<<TUN] %s %s->%s (%d bytes)\n", proto, srcIP, dstIP, len(packet))
+					}
 					_, err := tun.Write(packet)
 					if err != nil {
 						fmt.Fprintln(os.Stderr, "tun write error:", err)
@@ -237,12 +310,36 @@ func main() {
 						fmt.Fprintln(os.Stderr, "tun read error:", err)
 						return
 					}
-					mc.SendPacket(
+					if len(packet) > 0 {
+						srcIP := ""
+						dstIP := ""
+						proto := ""
+						version := packet[0] >> 4
+						if version == 4 && len(packet) >= 20 {
+							srcIP = net.IP(packet[12:16]).String()
+							dstIP = net.IP(packet[16:20]).String()
+							switch packet[9] {
+							case 6:
+								proto = "TCP"
+							case 17:
+								proto = "UDP"
+							case 1:
+								proto = "ICMP"
+							default:
+								proto = fmt.Sprintf("PROTO%d", packet[9])
+							}
+						}
+						fmt.Printf("[TUN>>] %s %s->%s (%d bytes)\n", proto, srcIP, dstIP, len(packet))
+					}
+					ok := mc.SendPacket(
 						source,
 						protocol.ProvideMode_Network,
 						packet,
 						time.Second*15,
 					)
+					if !ok {
+						fmt.Fprintf(os.Stderr, "[TUN!!] SendPacket FAILED\n")
+					}
 				}
 			}()
 
@@ -329,22 +426,15 @@ func getProviderSpec(locations *FindLocationsResult, city, country, region, prov
 			}
 		}
 	}
-	regions := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "region" })
-	cities := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "city" })
-	countries := lo.Filter(locations.Locations.Values(), func(v *LocationResult, _ int) bool { return v.LocationType == "country" })
-	uniqNames := func(locs []*LocationResult) []string {
-		names := lo.Map(locs, func(v *LocationResult, _ int) string { return v.Name })
-		return lo.Uniq(names)
+	best := lo.MaxBy(locations.Locations.Values(), func(a, b *LocationResult) bool {
+		return a.ProviderCount > b.ProviderCount
+	})
+	if best != nil {
+		fmt.Printf("auto-selected %q (%s), provider count %d\n", best.Name, best.LocationType, best.ProviderCount)
+		return []*connect.ProviderSpec{{LocationId: best.LocationId}}, nil
 	}
-	prefixEach := func(prefix string, names []string) []string {
-		return lo.Map(names, func(v string, _ int) string { return prefix + v })
-	}
-	return nil, fmt.Errorf(
-		"please specify a location:\n countries:\n%s\n regions:\n%s\n cities:\n%s",
-		strings.Join(prefixEach("  ", uniqNames(countries)), "\n"),
-		strings.Join(prefixEach("  ", uniqNames(regions)), "\n"),
-		strings.Join(prefixEach("  ", uniqNames(cities)), "\n"),
-	)
+
+	return nil, fmt.Errorf("no locations available")
 }
 
 func authNetworkClient(ctx context.Context, apiURL, jwt string, req *connect.AuthNetworkClientArgs) (string, error) {
@@ -392,17 +482,22 @@ type systemTun struct {
 }
 
 func createTun(name string, prefix netip.Prefix, mtu int) (*systemTun, error) {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR, 0)
+	// Delete existing TUN device to avoid stale flags
+	exec.Command("ip", "link", "delete", name).Run()
+	exec.Command("ip", "tuntap", "del", name, "mode", "tun").Run()
+
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
 	}
 
 	var ifr [64]byte
 	copy(ifr[:], name)
-	ifr[16] = 0x01
+	// Try with IFF_NO_PI first (raw IP packets without 4-byte tun_pi header)
+	ifr[16] = 0x01 | 0x10 // IFF_TUN | IFF_NO_PI
 	ifr[17] = 0x00
 
-	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TUNSETIFF), uintptr(byte(ifr[0]))); errno != 0 {
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TUNSETIFF), uintptr(unsafe.Pointer(&ifr[0]))); errno != 0 {
 		unix.Close(fd)
 		return nil, fmt.Errorf("TUNSETIFF: %w", errno)
 	}
@@ -423,6 +518,40 @@ func createTun(name string, prefix netip.Prefix, mtu int) (*systemTun, error) {
 	return tun, nil
 }
 
+var ethPIP = []byte{0x08, 0x00}
+var ethPIPv6 = []byte{0x86, 0xDD}
+
+func hasTunPI(packet []byte) bool {
+	return len(packet) >= 4 && packet[0] == 0x00 && packet[1] == 0x00 &&
+		((packet[2] == 0x08 && packet[3] == 0x00) || (packet[2] == 0x86 && packet[3] == 0xDD))
+}
+
+func stripTunPI(packet []byte) []byte {
+	if hasTunPI(packet) {
+		return packet[4:]
+	}
+	return packet
+}
+
+func prependTunPI(packet []byte) []byte {
+	if len(packet) == 0 {
+		return packet
+	}
+	version := packet[0] >> 4
+	pi := []byte{0x00, 0x00, 0x00, 0x00}
+	if version == 6 {
+		pi[2] = 0x86
+		pi[3] = 0xDD
+	} else {
+		pi[2] = 0x08
+		pi[3] = 0x00
+	}
+	result := make([]byte, len(pi)+len(packet))
+	copy(result, pi)
+	copy(result[4:], packet)
+	return result
+}
+
 func (t *systemTun) Read() ([]byte, error) {
 	buf := make([]byte, t.mtu+64)
 	for {
@@ -435,7 +564,7 @@ func (t *systemTun) Read() ([]byte, error) {
 		}
 		packet := make([]byte, n)
 		copy(packet, buf[:n])
-		return packet, nil
+		return stripTunPI(packet), nil
 	}
 }
 
@@ -445,7 +574,8 @@ func (t *systemTun) Write(packet []byte) (int, error) {
 	if t.closed {
 		return 0, errors.New("tun closed")
 	}
-	return unix.Write(t.fd, packet)
+	data := prependTunPI(packet)
+	return unix.Write(t.fd, data)
 }
 
 func (t *systemTun) CloseTun() error {
@@ -467,7 +597,11 @@ func resolveBypassHosts(ctx context.Context) []string {
 		addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 		if err == nil {
 			for _, addr := range addrs {
-				hosts = append(hosts, addr+"/32")
+				if ip := net.ParseIP(addr); ip != nil && ip.To4() == nil {
+					hosts = append(hosts, addr+"/128")
+				} else {
+					hosts = append(hosts, addr+"/32")
+				}
 			}
 		}
 	}
@@ -486,6 +620,8 @@ func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) error
 		return fmt.Errorf("get default gateway: %w", err)
 	}
 
+	localNet := netip.PrefixFrom(defaultGw, 24).Masked()
+	bypassCIDRs = append(bypassCIDRs, localNet.String())
 	bypassCIDRs = append(bypassCIDRs, defaultGw.String()+"/32")
 	bypassCIDRs = lo.Uniq(bypassCIDRs)
 

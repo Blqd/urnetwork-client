@@ -17,6 +17,36 @@ NC='\033[0m'
 
 mkdir -p "$CONFIG_DIR"
 
+TIMEOUT=""
+PARSED_ARGS=()
+SKIP_NEXT=false
+for ((i=1; i<=$#; i++)); do
+    if $SKIP_NEXT; then SKIP_NEXT=false; continue; fi
+    arg="${!i}"
+    if [[ "$arg" == "--timeout" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            TIMEOUT="${!next}"
+            SKIP_NEXT=true
+        fi
+    else
+        PARSED_ARGS+=("$arg")
+    fi
+done
+set -- "${PARSED_ARGS[@]}"
+
+TIMEOUT_CMD=""
+[[ -n "$TIMEOUT" ]] && TIMEOUT_CMD="timeout $TIMEOUT"
+
+cleanup_bg() {
+    if [[ -n "${BG_PID:-}" ]]; then
+        kill "$BG_PID" 2>/dev/null || true
+        wait "$BG_PID" 2>/dev/null || true
+    fi
+    clean_pid
+}
+trap cleanup_bg SIGINT SIGTERM EXIT
+
 usage() {
     cat <<EOF
 URnetwork VPN Client for Ubuntu
@@ -36,6 +66,7 @@ Usage:
     --city <city>       Выбрать город
     --country <country> Выбрать страну
     --region <region>   Выбрать регион
+    --timeout <сек>     Авто-остановка через N секунд
 
 Примеры:
     $(basename "$0") register user@example.com mypass
@@ -43,14 +74,18 @@ Usage:
     $(basename "$0") on
     $(basename "$0") off
     $(basename "$0") socks --country Netherlands
-    $(basename "$0") vpn --city "New York"
+    $(basename "$0") vpn --city "New York" --timeout 120
+    $(basename "$0") socks --timeout 300
 EOF
     exit 0
 }
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
-        exec sudo "$0" "$@"
+        local root_args=("$0")
+        [[ -n "$TIMEOUT" ]] && root_args+=(--timeout "$TIMEOUT")
+        root_args+=("$@")
+        exec sudo USER_AUTH="$USER_AUTH" PASSWORD="$PASSWORD" "${root_args[@]}"
     fi
 }
 
@@ -94,11 +129,12 @@ case "${1:-help}" in
         echo -e "${CYAN}▶  Starting $LAST_MODE...${NC}"
         case "$LAST_MODE" in
             socks)
-                "$BUILD_DIR/socksproxy" \
+                ${TIMEOUT_CMD:-} "$BUILD_DIR/socksproxy" \
                     --user-auth "$USER_AUTH" \
                     --password "$PASSWORD" \
                     "${@:2}" &
                 PID=$!
+                BG_PID=$PID
                 save_pid socks $PID
                 echo -e "${GREEN}✓ SOCKS5 proxy running on :9999 (pid $PID)${NC}"
                 wait $PID
@@ -106,11 +142,13 @@ case "${1:-help}" in
                 ;;
             vpn)
                 require_root "$@"
-                "$BUILD_DIR/urnetwork-vpn" \
+                ip link delete urnetwork 2>/dev/null || true
+                ${TIMEOUT_CMD:-} "$BUILD_DIR/urnetwork-vpn" \
                     --user-auth "$USER_AUTH" \
                     --password "$PASSWORD" \
                     "${@:2}" &
                 PID=$!
+                BG_PID=$PID
                 save_pid vpn $PID
                 echo -e "${GREEN}✓ VPN running (pid $PID)${NC}"
                 wait $PID
@@ -120,19 +158,17 @@ case "${1:-help}" in
         ;;
 
     off|stop)
+        require_root "$@"
         echo -e "${YELLOW}⏹  Stopping...${NC}"
         if [[ -f "$PID_FILE_SOCKS" ]]; then
-            kill "$(cat "$PID_FILE_SOCKS")" 2>/dev/null && echo "  ✓ SOCKS5 stopped" || true
+            kill "$(cat "$PID_FILE_SOCKS")" 2>/dev/null || true
         fi
         if [[ -f "$PID_FILE_VPN" ]]; then
-            kill "$(cat "$PID_FILE_VPN")" 2>/dev/null && echo "  ✓ VPN stopped" || true
+            kill "$(cat "$PID_FILE_VPN")" 2>/dev/null || true
         fi
         pkill -f "socksproxy" 2>/dev/null || true
         pkill -f "urnetwork-vpn" 2>/dev/null || true
-        if ip link show urnetwork &>/dev/null 2>&1; then
-            sudo ip route del default dev urnetwork metric 10 2>/dev/null || true
-            sudo ip link set urnetwork down 2>/dev/null || true
-        fi
+        ip link delete urnetwork 2>/dev/null || true
         clean_pid
         echo -e "${GREEN}✓ Stopped${NC}"
         ;;
@@ -141,18 +177,21 @@ case "${1:-help}" in
         if is_running; then
             exec "$0" off
         else
-            exec "$0" on "${@:2}"
+            local on_args=("$0" "on")
+            [[ -n "$TIMEOUT" ]] && on_args=(--timeout "$TIMEOUT" "on")
+            exec "${on_args[@]}" "${@:2}"
         fi
         ;;
 
     socks)
         load_credentials
         shift
-        "$BUILD_DIR/socksproxy" \
+        ${TIMEOUT_CMD:-} "$BUILD_DIR/socksproxy" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
             "$@" &
         PID=$!
+        BG_PID=$PID
         save_pid socks $PID
         echo -e "${GREEN}✓ SOCKS5 proxy on :9999 (pid $PID)${NC}"
         wait $PID
@@ -162,12 +201,14 @@ case "${1:-help}" in
     vpn)
         load_credentials
         require_root "$@"
+        ip link delete urnetwork 2>/dev/null || true
         shift
-        "$BUILD_DIR/urnetwork-vpn" \
+        ${TIMEOUT_CMD:-} "$BUILD_DIR/urnetwork-vpn" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
             "$@" &
         PID=$!
+        BG_PID=$PID
         save_pid vpn $PID
         echo -e "${GREEN}✓ VPN started (pid $PID)${NC}"
         wait $PID
@@ -235,6 +276,7 @@ EOF
         "$BUILD_DIR/socksproxy" \
             --user-auth "$USER_AUTH" \
             --password "$PASSWORD" \
+            list-locations \
             2>&1 || true
         ;;
 
