@@ -225,8 +225,9 @@ case "${1:-help}" in
         if is_running; then
             exec "$0" off
         else
-            local on_args=("$0" "on")
-            [[ -n "$TIMEOUT" ]] && on_args=(--timeout "$TIMEOUT" "on")
+            on_args=("$0")
+            [[ -n "$TIMEOUT" ]] && on_args+=(--timeout "$TIMEOUT")
+            on_args+=(--retry "$RETRY" "on")
             exec "${on_args[@]}" "${@:2}"
         fi
         ;;
