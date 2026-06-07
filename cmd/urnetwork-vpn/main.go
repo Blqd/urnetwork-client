@@ -276,7 +276,7 @@ func main() {
 
 			source := connect.SourceId(clientID)
 
-			mc := connect.NewRemoteUserNatMultiClientWithDefaults(
+			mc := connect.NewRemoteUserNatMultiClient(
 				ctx,
 				generator,
 				func(source connect.TransferPath, provideMode protocol.ProvideMode, ipPath *connect.IpPath, packet []byte) {
@@ -307,6 +307,7 @@ func main() {
 					}
 				},
 				protocol.ProvideMode_Network,
+				vpnMultiClientSettings(),
 			)
 
 			go func() {
@@ -401,6 +402,12 @@ func sendPacketFailureDiagnostic(packet []byte) string {
 	default:
 		return fmt.Sprintf("[TUN!!] SendPacket FAILED ip_version=%d len=%d probable=bad-tun-framing", version, len(packet))
 	}
+}
+
+func vpnMultiClientSettings() *connect.MultiClientSettings {
+	settings := connect.DefaultMultiClientSettings()
+	settings.TcpCollapsePrevention = false
+	return settings
 }
 
 func login(ctx context.Context, apiURL, userAuth, password string) (string, error) {
@@ -687,11 +694,15 @@ func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) ([]st
 	if err := runCmd("ip", "link", "set", iface, "mtu", "1400", "up"); err != nil {
 		return nil, fmt.Errorf("link up: %w", err)
 	}
-	if err := runCmd("ip", "route", "replace", "default", "dev", iface, "metric", "10"); err != nil {
+	if err := runCmd("ip", defaultRouteArgs(iface, prefix)...); err != nil {
 		return nil, fmt.Errorf("add default route: %w", err)
 	}
 
 	return addedBypasses, nil
+}
+
+func defaultRouteArgs(iface string, prefix netip.Prefix) []string {
+	return []string{"route", "replace", "default", "dev", iface, "src", prefix.Addr().String(), "metric", "10"}
 }
 
 func selectBypassCIDRs(defaultGw netip.Addr, bypassCIDRs []string) []string {

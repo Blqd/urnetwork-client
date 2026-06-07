@@ -90,3 +90,22 @@ func TestSendPacketFailureDiagnosticIncludesPacketContext(t *testing.T) {
 		t.Fatalf("diagnostic = %q, want %q", got, want)
 	}
 }
+
+func TestDefaultRouteArgsPinsTunSourceAddress(t *testing.T) {
+	prefix := netip.MustParsePrefix("10.0.0.1/24")
+
+	got := defaultRouteArgs("urnetwork", prefix)
+	want := []string{"route", "replace", "default", "dev", "urnetwork", "src", "10.0.0.1", "metric", "10"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("defaultRouteArgs = %v, want %v", got, want)
+	}
+}
+
+func TestVpnMultiClientSettingsAllowTcpRetransmits(t *testing.T) {
+	settings := vpnMultiClientSettings()
+
+	if settings.TcpCollapsePrevention {
+		t.Fatal("VPN multi-client settings should disable TcpCollapsePrevention")
+	}
+}
