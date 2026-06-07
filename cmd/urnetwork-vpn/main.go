@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -343,7 +344,7 @@ func main() {
 						time.Second*15,
 					)
 					if !ok {
-						fmt.Fprintf(os.Stderr, "[TUN!!] SendPacket FAILED\n")
+						fmt.Fprintln(os.Stderr, sendPacketFailureDiagnostic(packet))
 					}
 				}
 			}()
@@ -360,6 +361,46 @@ func main() {
 		},
 	}
 	app.RunAndExitOnError()
+}
+
+func sendPacketFailureDiagnostic(packet []byte) string {
+	const fallbackReason = "probable=tcp-collapse/backpressure/no-client"
+	if len(packet) < 1 {
+		return "[TUN!!] SendPacket FAILED len=0 probable=bad-packet"
+	}
+
+	version := packet[0] >> 4
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return fmt.Sprintf("[TUN!!] SendPacket FAILED IPv4 len=%d probable=truncated-packet", len(packet))
+		}
+		srcIP := net.IP(packet[12:16]).String()
+		dstIP := net.IP(packet[16:20]).String()
+		proto := packet[9]
+		switch proto {
+		case 6:
+			if len(packet) < 40 {
+				return fmt.Sprintf("[TUN!!] SendPacket FAILED TCP %s->%s len=%d probable=truncated-tcp", srcIP, dstIP, len(packet))
+			}
+			srcPort := binary.BigEndian.Uint16(packet[20:22])
+			dstPort := binary.BigEndian.Uint16(packet[22:24])
+			return fmt.Sprintf("[TUN!!] SendPacket FAILED TCP %s:%d->%s:%d len=%d %s", srcIP, srcPort, dstIP, dstPort, len(packet), fallbackReason)
+		case 17:
+			if len(packet) < 28 {
+				return fmt.Sprintf("[TUN!!] SendPacket FAILED UDP %s->%s len=%d probable=truncated-udp", srcIP, dstIP, len(packet))
+			}
+			srcPort := binary.BigEndian.Uint16(packet[20:22])
+			dstPort := binary.BigEndian.Uint16(packet[22:24])
+			return fmt.Sprintf("[TUN!!] SendPacket FAILED UDP %s:%d->%s:%d len=%d %s", srcIP, srcPort, dstIP, dstPort, len(packet), fallbackReason)
+		default:
+			return fmt.Sprintf("[TUN!!] SendPacket FAILED IPv4 proto=%d %s->%s len=%d probable=unsupported-protocol", proto, srcIP, dstIP, len(packet))
+		}
+	case 6:
+		return fmt.Sprintf("[TUN!!] SendPacket FAILED IPv6 len=%d %s", len(packet), fallbackReason)
+	default:
+		return fmt.Sprintf("[TUN!!] SendPacket FAILED ip_version=%d len=%d probable=bad-tun-framing", version, len(packet))
+	}
 }
 
 func login(ctx context.Context, apiURL, userAuth, password string) (string, error) {
@@ -500,8 +541,7 @@ func createTun(name string, prefix netip.Prefix, mtu int) (*systemTun, error) {
 	var ifr [64]byte
 	copy(ifr[:], name)
 	// Try with IFF_NO_PI first (raw IP packets without 4-byte tun_pi header)
-	ifr[16] = 0x01 | 0x10 // IFF_TUN | IFF_NO_PI
-	ifr[17] = 0x00
+	binary.LittleEndian.PutUint16(ifr[16:18], uint16(unix.IFF_TUN|unix.IFF_NO_PI))
 
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TUNSETIFF), uintptr(unsafe.Pointer(&ifr[0]))); errno != 0 {
 		unix.Close(fd)

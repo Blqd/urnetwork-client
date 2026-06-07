@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"net/netip"
 	"os"
 	"reflect"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestSystemTunWriteRawWhenNoPI(t *testing.T) {
@@ -52,5 +55,38 @@ func TestSelectBypassCIDRsFiltersFamilyAndDuplicates(t *testing.T) {
 	want := []string{"65.49.70.85/32"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("selectBypassCIDRs = %v, want %v", got, want)
+	}
+}
+
+func TestTunFlagsEncoding(t *testing.T) {
+	var ifr [64]byte
+	binary.LittleEndian.PutUint16(ifr[16:18], uint16(unix.IFF_TUN|unix.IFF_NO_PI))
+
+	got := binary.LittleEndian.Uint16(ifr[16:18])
+	want := uint16(unix.IFF_TUN | unix.IFF_NO_PI)
+	if got != want {
+		t.Fatalf("tun flags = %#x, want %#x", got, want)
+	}
+}
+
+func TestSendPacketFailureDiagnosticIncludesPacketContext(t *testing.T) {
+	ipv4TCPAck := []byte{
+		0x45, 0x00, 0x00, 0x28,
+		0x00, 0x00, 0x00, 0x00,
+		0x40, 0x06, 0x00, 0x00,
+		10, 0, 0, 1,
+		107, 191, 238, 91,
+		0xc0, 0x00, 0x01, 0xbb,
+		0x00, 0x00, 0x00, 0x10,
+		0x00, 0x00, 0x00, 0x20,
+		0x50, 0x10, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+
+	got := sendPacketFailureDiagnostic(ipv4TCPAck)
+
+	want := "[TUN!!] SendPacket FAILED TCP 10.0.0.1:49152->107.191.238.91:443 len=40 probable=tcp-collapse/backpressure/no-client"
+	if got != want {
+		t.Fatalf("diagnostic = %q, want %q", got, want)
 	}
 }
