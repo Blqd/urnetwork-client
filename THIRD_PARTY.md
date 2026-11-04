@@ -35,9 +35,11 @@ Changes made by this project on top of the upstream base commits:
     non-loopback binds, empty packets are skipped.
   - `tun.go`: larger receive channel (512), 1 s write timeout, dial-race
     attempts rotate through resolved addresses.
-- **`lib/userwireguard`**, **`lib/glog`**: the tree is unmodified; the fixes
-  listed in `docs/refactoring-plan.md` (0.1–0.4) are part of the imported
-  upstream snapshot, not local patches.
+- **`lib/userwireguard`**, **`lib/glog`**: no separate local patches are
+  recorded for these two trees. The fixes tracked as tickets 0.1, 0.2 and 0.4 in
+  `docs/refactoring-plan.md` are present in the vendored snapshot (the import
+  predates the nested history being dropped, so it is not possible to say from
+  this repository alone whether they were upstream or applied during import).
 
 All other Go modules are resolved from the module proxy; see the `go.mod` /
 `go.sum` files next to each module.
