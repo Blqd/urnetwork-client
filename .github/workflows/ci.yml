@@ -14,8 +14,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Go toolchain
-        run: go version
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: false
 
       - name: gofmt
         run: |
@@ -40,6 +42,10 @@ jobs:
       - name: Shell syntax
         run: |
           for f in scripts/*.sh; do bash -n "$f"; done
+
+      - name: Python compile
+        run: |
+          python3 -m py_compile gui/urnetwork-gui.py scripts/*.py
 
       - name: GUI tests
         run: python3 -m pytest tests -q

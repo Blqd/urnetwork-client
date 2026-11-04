@@ -7,19 +7,24 @@ import unittest
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-ENTRY = os.path.join(ROOT, "gui", "urnetwork-vpn.desktop")
+TEMPLATE = os.path.join(ROOT, "gui", "urnetwork-vpn.desktop.in")
 LAUNCHER = os.path.join(ROOT, "scripts", "urnetwork-gui-launch.sh")
 INSTALLER = os.path.join(ROOT, "scripts", "install-desktop-entry.sh")
 
 
-def read_entry():
-    with open(ENTRY, encoding="utf-8") as fh:
+def read_template():
+    with open(TEMPLATE, encoding="utf-8") as fh:
         return fh.read()
 
 
-def entry_keys():
+def read_entry():
+    """Render the template the same way install-desktop-entry.sh does."""
+    return read_template().replace("@PROJECT_DIR@", ROOT)
+
+
+def entry_keys(text=None):
     keys = {}
-    for line in read_entry().splitlines():
+    for line in (read_entry() if text is None else text).splitlines():
         if not line or line.startswith("#") or line.startswith("["):
             continue
         if "=" in line:
@@ -33,10 +38,25 @@ class DesktopEntryTest(unittest.TestCase):
         """desktop-file-validate must pass; unregistered Categories break desktops."""
         if not shutil.which("desktop-file-validate"):
             self.skipTest("desktop-file-validate not installed")
-        proc = subprocess.run(
-            ["desktop-file-validate", ENTRY], text=True, capture_output=True
-        )
+        with tempfile.NamedTemporaryFile("w", suffix=".desktop", delete=False) as fh:
+            fh.write(read_entry())
+            rendered = fh.name
+        try:
+            proc = subprocess.run(
+                ["desktop-file-validate", rendered], text=True, capture_output=True
+            )
+        finally:
+            os.unlink(rendered)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_template_is_machine_independent(self):
+        """The committed template must not contain an absolute home path."""
+        text = read_template()
+        self.assertIn("@PROJECT_DIR@", text)
+        self.assertNotIn("/home/", text)
+        tkeys = entry_keys(read_template())
+        for key in ("Exec", "TryExec", "Path"):
+            self.assertIn("@PROJECT_DIR@", tkeys[key], key)
 
     def test_required_keys(self):
         keys = entry_keys()

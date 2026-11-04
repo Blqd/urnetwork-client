@@ -3,6 +3,12 @@
 Клиент P2P-VPN на базе URnetwork: Go-стек (`lib/connect`, `lib/sdk`, `lib/proxy`),
 CLI/демоны и GTK3-GUI на Python.
 
+> **English.** A peer-to-peer VPN client for Ubuntu: a Go networking stack
+> (vendored `urnetwork` libraries, see [`THIRD_PARTY.md`](THIRD_PARTY.md)) plus a
+> GTK3/PyGObject GUI. SOCKS5 mode needs no root; TUN mode routes the default
+> route into the `urnetwork` device. Build with `make build`, test with
+> `make test`; details and the audit results are in [`docs/`](docs/analysis.md).
+
 Клиент умеет работать в двух режимах:
 
 | Режим | Что запускается | Как трафик попадает в туннель |
@@ -35,7 +41,7 @@ GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем зап
 
 | Файл | Назначение |
 |---|---|
-| `auth` | `USER_AUTH` / `PASSWORD`, права `0600` |
+| `auth` | `USER_AUTH` / `NETWORK_NAME`; пароль — в keyring (fallback: `PASSWORD`, `0600`) |
 | `diagnostic.log` | лог GUI, ротация на 10 МБ в `diagnostic.log.1` |
 | `launcher.log` | лог обёртки desktop-entry |
 | `state.json` | состояние туннеля (пишет `urnetwork-vpn`) |
@@ -73,11 +79,11 @@ GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем зап
 `sudo` (не через `argv` и не через файл на диске). Если установлено правило из
 `scripts/install-nopasswd.sh`, окно не появляется вообще — `sudo` ничего не
 спрашивает. Подробности — в
-[`app_analysis_and_improvements.md`](app_analysis_and_improvements.md), п. 8.8.
+[`docs/analysis.md`](docs/analysis.md), п. 8.8.
 
 ## Что изменилось в этой итерации
 
-Полный разбор с числами — в [`app_analysis_and_improvements.md`](app_analysis_and_improvements.md).
+Полный разбор с числами — в [`docs/analysis.md`](docs/analysis.md).
 
 - **VPN-ядро** (`cmd/urnetwork-vpn/main.go`): раньше каждый пакет печатался в
   stdout (`[TUN>>]`/`[<<TUN]`) и отправлялся синхронно с таймаутом 15 c — при
@@ -129,8 +135,20 @@ GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем зап
   (см. `--block-ipv6`).
 - SOCKS5 без аутентификации — не открывайте наружу.
 - `lib/connect` содержит исторические проблемы, разобранные в
-  `final_code_review_report.md` и `refactoring_plan.md`; они не входят в
+  [`docs/code-review.md`](docs/code-review.md) и
+  [`docs/refactoring-plan.md`](docs/refactoring-plan.md); они не входят в
   текущую итерацию.
+
+## Документация
+
+| Файл | Содержание |
+|---|---|
+| [`docs/analysis.md`](docs/analysis.md) | разбор работы клиента, найденные проблемы, что уже внедрено и что осталось |
+| [`docs/code-review.md`](docs/code-review.md) | ревью вендоренных библиотек (JWT, паники, TLS, egress-политика) |
+| [`docs/refactoring-plan.md`](docs/refactoring-plan.md) | план рефакторинга upstream-библиотек |
+| [`SECURITY.md`](SECURITY.md) | модель угроз: root, sudo, пароли, SOCKS5 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | сборка, тесты, структура проекта |
+| [`THIRD_PARTY.md`](THIRD_PARTY.md) | вендоренные библиотеки, лицензии, локальные патчи |
 
 ## Проверка после изменений
 
@@ -160,3 +178,9 @@ ip route show default                      # default dev urnetwork … metric 10
 ip -6 route show | grep blackhole          # blackhole default … (IPv6 закрыт)
 bash scripts/urnetwork-connect.sh off      # маршрут восстанавливается из backup
 ```
+
+## Лицензия
+
+Проект распространяется под [Mozilla Public License 2.0](LICENSE).
+Вендоренные библиотеки сохраняют собственные файлы `LICENSE`; их происхождение
+и локальные изменения перечислены в [`THIRD_PARTY.md`](THIRD_PARTY.md).

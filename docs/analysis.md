@@ -410,8 +410,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/home/user/.config/urnetwork/auth.env   # 0600, root:root
-ExecStart=/home/user/Документы/urnetwork-client/build/urnetwork-vpn --verbose=false
+EnvironmentFile=/etc/urnetwork/auth.env                 # 0600, root:root
+ExecStart=/usr/local/libexec/build/urnetwork-vpn --verbose=false
 Restart=on-failure
 RestartSec=3
 AmbientCapabilities=CAP_NET_ADMIN
@@ -485,7 +485,7 @@ lint:
 
 ### 5.8 Документация (P2, ~0.5 дня)
 
-`README.md` в корне: что это, как собрать (`make build`), как настроить (`register`/`auth`), как запускать (GUI/CLI/`systemctl`), какие режимы и ограничения (IPv6, только TCP+UDP через socks, где логи, как диагностировать). Ссылки на `final_code_review_report.md` и `refactoring_plan.md`.
+`README.md` в корне: что это, как собрать (`make build`), как настроить (`register`/`auth`), как запускать (GUI/CLI/`systemctl`), какие режимы и ограничения (IPv6, только TCP+UDP через socks, где логи, как диагностировать). Ссылки на `docs/code-review.md` и `docs/refactoring-plan.md`.
 
 ---
 

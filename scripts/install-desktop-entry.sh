@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SRC_DESKTOP="$PROJECT_DIR/gui/urnetwork-vpn.desktop"
+SRC_DESKTOP_TEMPLATE="$PROJECT_DIR/gui/urnetwork-vpn.desktop.in"
 SRC_ICON="$PROJECT_DIR/gui/urnetwork-vpn.svg"
 ICON_NAME="urnetwork-vpn"
 
@@ -22,12 +22,17 @@ ICONS_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 WANT_DESKTOP=0
 [ "${1:-}" = "--desktop" ] && WANT_DESKTOP=1
 
-[ -f "$SRC_DESKTOP" ] || { echo "missing $SRC_DESKTOP" >&2; exit 1; }
+[ -f "$SRC_DESKTOP_TEMPLATE" ] || { echo "missing $SRC_DESKTOP_TEMPLATE" >&2; exit 1; }
 [ -f "$SRC_ICON" ] || { echo "missing $SRC_ICON" >&2; exit 1; }
 
+RENDER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/urnetwork-desktop.XXXXXX")"
+RENDERED_DESKTOP="$RENDER_DIR/urnetwork-vpn.desktop"
+trap 'rm -rf "$RENDER_DIR"' EXIT
+sed "s|@PROJECT_DIR@|$PROJECT_DIR|g" "$SRC_DESKTOP_TEMPLATE" > "$RENDERED_DESKTOP"
+
 if command -v desktop-file-validate >/dev/null 2>&1; then
-    if ! desktop-file-validate "$SRC_DESKTOP"; then
-        echo "warning: $SRC_DESKTOP does not fully validate" >&2
+    if ! desktop-file-validate "$RENDERED_DESKTOP"; then
+        echo "warning: rendered desktop entry does not fully validate" >&2
     fi
 fi
 
@@ -84,7 +89,7 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && \
 
 # --- desktop entry ------------------------------------------------------
 install -d "$APPS_DIR"
-install -m 755 "$SRC_DESKTOP" "$APPS_DIR/$ICON_NAME.desktop"
+install -m 755 "$RENDERED_DESKTOP" "$APPS_DIR/$ICON_NAME.desktop"
 
 command -v update-desktop-database >/dev/null 2>&1 && \
     update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
@@ -96,7 +101,7 @@ echo "installed: $ICONS_ROOT/{scalable,16x16,...,256x256}/apps/$ICON_NAME.{svg,p
 if [ "$WANT_DESKTOP" -eq 1 ]; then
     DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
     if [ -d "$DESKTOP_DIR" ]; then
-        cp -f "$SRC_DESKTOP" "$DESKTOP_DIR/$ICON_NAME.desktop"
+        cp -f "$RENDERED_DESKTOP" "$DESKTOP_DIR/$ICON_NAME.desktop"
         chmod 755 "$DESKTOP_DIR/$ICON_NAME.desktop"
         # Nautilus refuses to launch an entry that is not marked trusted.
         gio set "$DESKTOP_DIR/$ICON_NAME.desktop" metadata::trusted true 2>/dev/null || true
