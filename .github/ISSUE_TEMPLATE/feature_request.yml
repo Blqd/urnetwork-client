@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a feature, a distro target or an improvement
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Опишите задачу, а не только решение — так проще выбрать правильный путь.
+        Describe the problem, not only the solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that the client does not allow today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional sketch, CLI flag, screenshot or mock-up.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - GUI (GTK3)
+        - CLI / launcher scripts
+        - TUN mode / routing
+        - SOCKS5 mode
+        - packaging (.deb, PPA, Flatpak, Snap, AUR)
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing clients, workarounds, upstream options.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and the roadmap in docs/
+          required: true

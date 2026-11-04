@@ -4,6 +4,19 @@
 
 **English** | [Русский](README.md)
 
+<img src="docs/assets/screenshot.png" width="300" align="right" alt="GTK3 GUI: account, SOCKS5/TUN mode, exit location and the Start button">
+
+**A peer-to-peer VPN for Ubuntu with a native GTK3 GUI.** Enter your URnetwork
+credentials, press Start. The password lives in GNOME Keyring, SOCKS5 mode runs
+without root, TUN takes over the default route and blocks the IPv6 leak.
+
+- **One `.deb`** — no Snap, Flatpak or AppImage: `urnetwork-gui`,
+  `urnetwork-connect status|socks|vpn|off` and the desktop entry come together.
+- **No Electron shell**: a Python + GTK3 GUI on top of a Go networking stack
+  built from source (`lib/connect`, `lib/sdk`, `lib/proxy`).
+- **Explicit privileges**: root is needed only for TUN, and the package installs
+  no sudoers rules (opt-in: `scripts/install-nopasswd.sh`).
+
 A peer-to-peer VPN client built on URnetwork: a Go networking stack
 (`lib/connect`, `lib/sdk`, `lib/proxy`), CLI tools/daemons and a GTK3 GUI in
 Python.
@@ -15,7 +28,19 @@ The client supports two modes:
 | SOCKS5 (no root) | `build/socksproxy` | Apps/system use `127.0.0.1:9999` |
 | TUN (root required) | `build/urnetwork-vpn` | The default route is moved into the `urnetwork` device |
 
-## Quick start
+## Install from a release (Ubuntu 22.04+)
+
+```bash
+gh release download -R Blqd/urnetwork-client --pattern '*.deb'
+sudo dpkg -i urnetwork-client_*.deb
+sudo apt-get -f install   # install dependencies if dpkg asks for them
+urnetwork-gui
+```
+
+No `gh`? Grab the `.deb` from the [releases page](https://github.com/Blqd/urnetwork-client/releases/latest)
+and install it with the same `dpkg -i`.
+
+## Building from source
 
 ```bash
 git clone https://github.com/Blqd/urnetwork-client.git
@@ -49,7 +74,7 @@ make build          # binaries are required for packaging
 make deb            # -> dist/urnetwork-client_<version>_<arch>.deb
 ```
 
-### Installing the .deb
+## Installing the .deb
 
 ```bash
 sudo dpkg -i dist/urnetwork-client_*.deb

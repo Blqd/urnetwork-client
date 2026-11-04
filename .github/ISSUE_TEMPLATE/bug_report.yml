@@ -1,0 +1,74 @@
+name: Bug report
+description: Something is broken — GUI, CLI, packaging or the tunnel itself
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за отчёт! Пишите по-русски или по-английски — как удобнее.
+        Thanks for the report — Russian or English are both fine.
+
+        For security issues please use **Security → Report a vulnerability** instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Install the .deb from releases
+        2. Run `urnetwork-gui`
+        3. Click Start in SOCKS5 mode
+        4. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - SOCKS5 (no root)
+        - TUN / VPN (root)
+        - GUI itself (no connection)
+        - install / packaging
+        - build from source
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or `urnetwork-connect status` / `git rev-parse --short HEAD`
+      placeholder: v0.1.1
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and kernel
+      placeholder: Ubuntu 24.04, kernel 6.8.0-45-generic
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        GUI: enable “Verbose logs” and copy the box.
+        CLI: `sudo scripts/urnetwork-connect.sh vpn` output, plus `journalctl -b --no-pager | tail -50` if relevant.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and the README first
+          required: true
+        - label: I am not reporting a security vulnerability (those go to Security → Report a vulnerability)
+          required: true
