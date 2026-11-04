@@ -214,7 +214,38 @@ EOF
     exit 0
 }
 
-INSTALLED_SCRIPT="/usr/local/libexec/urnetwork/urnetwork-connect.sh"
+# Root-owned copy of this script.  The Debian package installs it under
+# /usr/lib/urnetwork/scripts; scripts/install-nopasswd.sh (repository flow)
+# uses /usr/local/libexec.  Prefer whichever is present so the sudoers rule
+# never authorises a user-writable copy.
+INSTALLED_SCRIPT="${URNETWORK_INSTALLED_SCRIPT:-}"
+if [[ -z "$INSTALLED_SCRIPT" ]]; then
+    for candidate in \
+        /usr/lib/urnetwork/scripts/urnetwork-connect.sh \
+        /usr/local/libexec/urnetwork/urnetwork-connect.sh; do
+        if [[ -x "$candidate" ]]; then
+            INSTALLED_SCRIPT="$candidate"
+            break
+        fi
+    done
+fi
+
+find_credentials_helper() {
+    if [[ -n "${URNETWORK_CREDENTIALS_HELPER:-}" && -x "${URNETWORK_CREDENTIALS_HELPER}" ]]; then
+        printf '%s\n' "$URNETWORK_CREDENTIALS_HELPER"
+        return 0
+    fi
+    for candidate in \
+        /usr/lib/urnetwork/scripts/urnetwork-credentials.py \
+        /usr/local/libexec/urnetwork/urnetwork-credentials.py \
+        "$SCRIPT_DIR/urnetwork-credentials.py"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -235,10 +266,10 @@ require_root() {
 
         # Prefer the root-owned copy installed by scripts/install-nopasswd.sh:
         # the sudoers rule then never authorises a user-writable script.
-        if [[ -x "$INSTALLED_SCRIPT" ]]; then
+        if [[ -n "$INSTALLED_SCRIPT" && -x "$INSTALLED_SCRIPT" ]]; then
             exec "${sudo_cmd[@]}" "$INSTALLED_SCRIPT" "${root_args[@]}"
         fi
-        echo -e "${YELLOW}⚠ $INSTALLED_SCRIPT is not installed; run scripts/install-nopasswd.sh${NC}" >&2
+        echo -e "${YELLOW}⚠ Installed copy not found; running the current copy as root.${NC}" >&2
         exec "${sudo_cmd[@]}" "$0" "${root_args[@]}"
     fi
 }
@@ -273,11 +304,8 @@ load_credentials() {
     # plaintext password in the auth file.
     if [[ -z "$PASSWORD" && -n "$USER_AUTH" ]]; then
         local cred_helper
-        cred_helper="${URNETWORK_CREDENTIALS_HELPER:-/usr/local/libexec/urnetwork/urnetwork-credentials.py}"
-        if [[ ! -x "$cred_helper" ]]; then
-            cred_helper="$SCRIPT_DIR/urnetwork-credentials.py"
-        fi
-        if [[ -x "$cred_helper" ]]; then
+        cred_helper="$(find_credentials_helper || true)"
+        if [[ -n "$cred_helper" ]]; then
             PASSWORD="$(/usr/bin/python3 "$cred_helper" get "$USER_AUTH" 2>/dev/null || true)"
         fi
     fi
@@ -435,12 +463,9 @@ case "${1:-help}" in
 
         # Prefer the desktop secret store; the auth file then keeps only the
         # account name. (No `local` here: this branch runs at script scope.)
-        cred_helper="${URNETWORK_CREDENTIALS_HELPER:-/usr/local/libexec/urnetwork/urnetwork-credentials.py}"
-        if [[ ! -x "$cred_helper" ]]; then
-            cred_helper="$SCRIPT_DIR/urnetwork-credentials.py"
-        fi
+        cred_helper="$(find_credentials_helper || true)"
         stored=0
-        if [[ -x "$cred_helper" ]] \
+        if [[ -n "$cred_helper" ]] \
            && printf '%s\n' "$PASSWORD_VAL" | /usr/bin/python3 "$cred_helper" set "$EMAIL" >/dev/null 2>&1; then
             stored=1
         fi

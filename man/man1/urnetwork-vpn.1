@@ -1,0 +1,89 @@
+.TH URNETWORK-VPN 1 "2026-11-04" "urnetwork-client 0.1.0" "User Commands"
+.SH NAME
+urnetwork-vpn \- URnetwork TUN engine
+.SH SYNOPSIS
+.B urnetwork-vpn
+.RI [ options ]
+.SH DESCRIPTION
+.B urnetwork-vpn
+creates a TUN device, installs a default route through it and forwards packets
+through the URnetwork peer-to-peer network.  It must run as root; normally it
+is started by
+.B urnetwork-connect vpn
+or the GUI, which handle the route journal, the IPv6 block and cleanup.
+.PP
+On start it prints
+.I "VPN connected. TUN: <name>, IP: <addr>"
+and a periodic statistics line.  Pressing Ctrl+C, SIGTERM or a fatal engine
+error tears the tunnel down and restores the routes.
+.SH OPTIONS
+.TP
+.B --api-url URL
+API endpoint (env
+.IR API_URL ,
+default https://api.bringyour.com).
+.TP
+.B --platform-url URL
+Platform endpoint (env
+.IR PLATFORM_URL ).
+.TP
+.B --user-auth EMAIL
+Account name (env
+.IR USER_AUTH ).
+.TP
+.B --password PASSWORD
+Password (env
+.IR PASSWORD ).
+.TP
+.B --provider-id ID
+Deprecated provider selector.
+.TP
+.B --country NAME
+Exit country.
+.TP
+.B --city NAME
+Exit city.
+.TP
+.B --region NAME
+Exit region.
+.TP
+.B --mtu N
+Tunnel MTU, 576..9000 (default 1400).
+.TP
+.B --tun-name NAME
+TUN interface name (default
+.IR urnetwork ).
+.TP
+.B --tun-addr CIDR
+Tunnel IPv4 address (default 10.0.0.1/24).
+.TP
+.B --bypass CIDR
+Extra destination routed outside the tunnel (repeatable).
+.TP
+.B --no-route
+Do not touch the default route (for manual setups).
+.TP
+.B --block-ipv6
+Add an IPv6 blackhole route so IPv6 traffic cannot leak (default true).
+.TP
+.B --replace-tun
+Delete an existing TUN device instead of refusing to start.
+.TP
+.B --send-workers N
+Number of packet sender goroutines (default 1 preserves ordering).
+.TP
+.B --send-queue N
+Size of the bounded send queue (default 2048).
+.TP
+.B --verbose
+Log every packet (slow; troubleshooting only).
+.TP
+.B --state-file PATH
+Write engine state as JSON (env
+.IR URNETWORK_STATE_FILE ).
+.SH EXIT STATUS
+Non-zero on invalid MTU, missing credentials, unavailable exit location or a
+failed engine.
+.SH SEE ALSO
+.BR urnetwork-connect (1),
+.BR urnetwork-gui (1)

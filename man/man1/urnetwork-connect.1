@@ -1,0 +1,80 @@
+.TH URNETWORK-CONNECT 1 "2026-11-04" "urnetwork-client 0.1.0" "User Commands"
+.SH NAME
+urnetwork-connect \- start, stop and manage the URnetwork client
+.SH SYNOPSIS
+.B urnetwork-connect
+.RI [ options ]
+.I command
+.RI [ command-options ]
+.SH COMMANDS
+.TP
+.B on
+Replay the last used mode (default
+.IR socks ).
+.TP
+.B socks
+Start the SOCKS5 proxy on
+.I 127.0.0.1:9999
+(no root needed).
+.TP
+.B vpn
+Start the system-wide TUN VPN (needs root; uses sudo).
+.TP
+.B off
+Stop the running engine, remove the TUN device, restore the previous default
+route and clean up state.
+.TP
+.B toggle
+Stop the engine if it is running, otherwise replay the last mode.
+.TP
+.B status
+Show the account, which engine is running, the saved mode and the state file.
+.TP
+.B list-locations
+Print the countries and cities offered by the network.
+.TP
+.B register EMAIL PASSWORD
+Register the local account and store the password in the desktop secret store.
+.TP
+.B verify CODE
+Verify the account with the code sent by e-mail.
+.SH OPTIONS
+.TP
+.B --timeout SECONDS
+Stop the engine after the given time (used for tests).
+.TP
+.B --retry N
+How many times to restart a crashed engine (default 3).
+.TP
+.BI --country " NAME"
+Preferred exit country.
+.TP
+.BI --city " NAME"
+Preferred exit city.
+.SH FILES
+.TP
+.I ~/.config/urnetwork/auth
+account name and network
+.TP
+.I ~/.config/urnetwork/state.json
+state of the running engine
+.TP
+.I ~/.config/urnetwork/connect.lock
+single-instance lock
+.TP
+.I ~/.config/urnetwork/default-route.before
+saved default route, restored by
+.B off
+.SH ENVIRONMENT
+.TP
+.B USER_AUTH, PASSWORD
+credentials; normally loaded from the auth file and the secret store
+.TP
+.B URNETWORK_CONFIG_DIR
+override the configuration directory
+.TP
+.B URNETWORK_CREDENTIALS_HELPER
+path to the Secret Service helper
+.SH SEE ALSO
+.BR urnetwork-gui (1),
+.BR urnetwork-vpn (1)

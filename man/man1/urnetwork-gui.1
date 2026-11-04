@@ -1,0 +1,40 @@
+.TH URNETWORK-GUI 1 "2026-11-04" "urnetwork-client 0.1.0" "User Commands"
+.SH NAME
+urnetwork-gui \- GTK3 graphical front end for the URnetwork client
+.SH SYNOPSIS
+.B urnetwork-gui
+.SH DESCRIPTION
+.B urnetwork-gui
+starts the GTK3 control panel.  It stores the account name in
+.I ~/.config/urnetwork/auth
+and keeps the URnetwork password in the desktop secret store (Secret Service,
+normally GNOME Keyring).
+.PP
+Two modes are available: a local SOCKS5 proxy on
+.I 127.0.0.1:9999
+that needs no privileges, and a system-wide TUN VPN that installs a default
+route through the tunnel.  The TUN mode requires root; the GUI launches the
+engine through a root-owned helper, and a sudo askpass helper opens its own
+terminal window when a password is needed.
+.SH FILES
+.TP
+.I ~/.config/urnetwork/auth
+account name and network; the password is kept in the secret store
+.TP
+.I ~/.config/urnetwork/diagnostic.log
+GUI and engine log, rotated at 10 MB
+.TP
+.I ~/.config/urnetwork/state.json
+state written by the running VPN engine
+.SH ENVIRONMENT
+.TP
+.B URNETWORK_KEYRING
+set to
+.I 0
+to keep the password in the auth file instead of the secret store
+.TP
+.B URNETWORK_PYTHON
+interpreter used by the launcher script
+.SH SEE ALSO
+.BR urnetwork-connect (1),
+.BR urnetwork-vpn (1)

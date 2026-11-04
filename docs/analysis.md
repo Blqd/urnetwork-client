@@ -739,6 +739,32 @@ GUI хранит его в Secret Service (GNOME Keyring) через новый 
 три новых теста в `tests/test_gui_hardening.py` (сохранение без `PASSWORD=`,
 загрузка из keyring, миграция из старого файла). Итого `pytest` → **30 passed**.
 
+### 8.10 Пакет `.deb`
+
+`make deb` (он же `scripts/build-deb.sh`) собирает
+`dist/urnetwork-client_<версия>_<arch>.deb` без прав root: staging-дерево +
+`dpkg-deb --root-owner-group -Zxz`. Внутри:
+
+- `/usr/lib/urnetwork/{build,gui,scripts}` — бинарники, GUI и хелперы
+  (askpass, credentials, launcher);
+- `/usr/bin/{urnetwork-gui,urnetwork-connect,urnetwork-vpn}` — обёртки и
+  симлинк на движок;
+- desktop-entry, иконка, man-страницы `urnetwork-gui(1)`,
+  `urnetwork-connect(1)`, `urnetwork-vpn(1)`, `copyright`/`changelog.Debian.gz`;
+- `Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-secret-1, sudo,
+  iproute2, curl, libc6 (>= 2.34)`.
+
+Особенности: пути в GUI вычисляются от `__file__` (`../scripts/...`), поэтому
+пакетный layout `/usr/lib/urnetwork/{gui,scripts}` работает без правок; в
+`urnetwork-connect.sh` добавлены `find_credentials_helper()` и выбор
+`INSTALLED_SCRIPT` из `/usr/lib/urnetwork/scripts` либо
+`/usr/local/libexec/urnetwork`. Пакет **не** устанавливает правил sudoers:
+пароль sudo спрашивается окном askpass при старте TUN-режима; правило
+`scripts/install-nopasswd.sh` остаётся опциональным. Сборка: `-buildmode=pie`,
+`-ldflags '-s -w'` — бинарники проходят lintian-проверки hardening, пакет
+~14 МБ; `lintian` чист (единственное переопределение —
+`initial-upload-closes-no-bugs`).
+
 ## 9. Что осталось (не входило в эту итерацию)
 
 1. **Производительность**: измерить 4 параллельных потока в стабильной сети;

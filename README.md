@@ -40,6 +40,32 @@ sudo scripts/urnetwork-connect.sh off      # остановить всё и ве
 
 GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем запуск «URnetwork VPN».
 
+## Установка из .deb
+
+```bash
+make build          # бинарники нужны для упаковки
+make deb            # -> dist/urnetwork-client_<версия>_<arch>.deb
+sudo dpkg -i dist/urnetwork-client_*.deb
+sudo apt-get -f install   # доустановить зависимости, если dpkg попросит
+```
+
+Пакет ставит всё в `/usr/lib/urnetwork` и добавляет в `$PATH`:
+
+| Команда | Что делает |
+|---|---|
+| `urnetwork-gui` | GTK3 GUI (пункт меню «URnetwork VPN») |
+| `urnetwork-connect status\|socks\|vpn\|off` | управление из терминала |
+| `urnetwork-vpn` | сам TUN-движок (обычно запускается через `urnetwork-connect`) |
+
+Требования пакета: `python3`, `python3-gi`, `gir1.2-gtk-3.0`, `gir1.2-secret-1`,
+`sudo`, `iproute2`, `curl`, `libc6 (>= 2.34)` (Ubuntu 22.04+). Пакет **не**
+добавляет правил sudoers: окно с паролем sudo появляется при старте VPN-режима
+(один раз на запуск). Кто не хочет вводить пароль каждый раз, может поставить
+правило из `scripts/install-nopasswd.sh` — см. раздел «Безопасность».
+
+Удаление: `sudo dpkg -r urnetwork-client` (конфигурация в `~/.config/urnetwork`
+остаётся).
+
 ## Конфигурация
 
 `~/.config/urnetwork/` (права 0700):
@@ -132,7 +158,8 @@ GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем зап
   восстановление маршрута и удаление stale TUN; `register` качает бинарник через
   `mktemp` и раскладывает без старого бага `tar A || tar B && cp`.
 - **Тесты/сборка**: `make test` (Go-тесты клиента + pytest + `bash -n`),
-  `make build`, `make install`, CI-workflow.
+  `make build` (PIE, `-s -w`), `make install`, `make deb` (пакет
+  `dist/urnetwork-client_*.deb`), CI-workflow.
 
 ## Известные ограничения
 

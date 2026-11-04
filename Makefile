@@ -10,10 +10,14 @@ GO ?= $(shell if /usr/local/go/bin/go version >/dev/null 2>&1; \
 GOTOOLCHAIN ?= go1.26.0
 GOCACHE     ?= /tmp/urnetwork-go-cache
 BUILD_DIR   ?= build
+# Position-independent executables with RELRO keep the Debian package clean
+# (lintian hardening checks) and are smaller because debug info is dropped.
+GO_BUILD_FLAGS ?= -trimpath -buildmode=pie
+GO_LDFLAGS     ?= -s -w
 
 export GOTOOLCHAIN GOCACHE
 
-.PHONY: all build vpn socks test test-go test-gui test-scripts \
+.PHONY: all build vpn socks test test-go test-gui test-scripts deb \
         fmt vet lint install install-desktop clean run-socks run-vpn
 
 all: build
@@ -22,11 +26,14 @@ build: vpn socks
 
 vpn:
 	@mkdir -p $(BUILD_DIR)
-	cd cmd/urnetwork-vpn && $(GO) build -trimpath -o ../../$(BUILD_DIR)/urnetwork-vpn .
+	cd cmd/urnetwork-vpn && $(GO) build $(GO_BUILD_FLAGS) -ldflags '$(GO_LDFLAGS)' -o ../../$(BUILD_DIR)/urnetwork-vpn .
 
 socks:
 	@mkdir -p $(BUILD_DIR)
-	cd lib/proxy && $(GO) build -trimpath -o ../../$(BUILD_DIR)/socksproxy ./socks
+	cd lib/proxy && $(GO) build $(GO_BUILD_FLAGS) -ldflags '$(GO_LDFLAGS)' -o ../../$(BUILD_DIR)/socksproxy ./socks
+
+deb: build
+	scripts/build-deb.sh
 
 # The lib/connect integration tests bind fixed local ports and are not safe to
 # run in parallel with anything else, so the default target only covers the
@@ -45,6 +52,7 @@ test-scripts:
 	bash -n scripts/urnetwork-gui-launch.sh
 	bash -n scripts/install-nopasswd.sh
 	bash -n scripts/install-desktop-entry.sh
+	bash -n scripts/build-deb.sh
 	python3 -m py_compile scripts/urnetwork-credentials.py
 
 fmt:

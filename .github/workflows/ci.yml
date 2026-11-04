@@ -38,6 +38,9 @@ jobs:
       - name: Build client binaries
         run: make build
 
+      - name: Build Debian package
+        run: make deb
+
       - name: Go tests (client module)
         working-directory: cmd/urnetwork-vpn
         run: go test -timeout 120s ./...
