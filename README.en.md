@@ -258,6 +258,7 @@ Full details in [`docs/analysis.md`](docs/analysis.md), §8.11.
 | [`SECURITY.md`](SECURITY.md) | threat model: root, sudo, passwords, SOCKS5 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | build, tests, project layout |
 | [`THIRD_PARTY.md`](THIRD_PARTY.md) | vendored libraries, licenses, local patches |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | rules for issues/PR discussions (RU + EN) |
 
 ## Checking after changes
 

@@ -271,6 +271,7 @@ sudo apt-get -f install   # доустановить зависимости, е�
 | [`SECURITY.md`](SECURITY.md) | модель угроз: root, sudo, пароли, SOCKS5 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | сборка, тесты, структура проекта |
 | [`THIRD_PARTY.md`](THIRD_PARTY.md) | вендоренные библиотеки, лицензии, локальные патчи |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | правила общения в issues/PR (RU + EN) |
 
 ## Проверка после изменений
 
