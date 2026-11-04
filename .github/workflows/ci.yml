@@ -14,6 +14,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Python test dependencies
+        run: python3 -m pip install --disable-pip-version-check pytest
+
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
