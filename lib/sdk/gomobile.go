@@ -1,0 +1,452 @@
+package sdk
+
+import (
+	"encoding/json"
+	"reflect"
+	"slices"
+	"time"
+)
+
+// use a exported lists since arrays of structs are not exportable
+// (see notes in `client.go`)
+
+// conforms to `json.Marshaler` and `json.Unmarshaler`
+type exportedList[T any] struct {
+	values []T
+}
+
+func newExportedList[T any]() *exportedList[T] {
+	return &exportedList[T]{}
+}
+
+func (self *exportedList[T]) Len() int {
+	return len(self.values)
+}
+
+func (self *exportedList[T]) Get(i int) T {
+	return self.values[i]
+}
+
+func (self *exportedList[T]) Add(value T) {
+	self.values = append(self.values, value)
+}
+
+func (self *exportedList[T]) addAll(values ...T) {
+	self.values = append(self.values, values...)
+}
+
+func (self *exportedList[T]) getAll() []T {
+	return slices.Clone(self.values)
+}
+
+func (self *exportedList[T]) Contains(v T) bool {
+	for _, value := range self.values {
+		if reflect.DeepEqual(value, v) {
+			return true
+		}
+	}
+	return false
+}
+
+func (self *exportedList[T]) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &self.values)
+}
+
+func (self *exportedList[T]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(self.values)
+}
+
+type StringList struct {
+	exportedList[string]
+}
+
+func NewStringList() *StringList {
+	return &StringList{
+		exportedList: *newExportedList[string](),
+	}
+}
+
+func (self *StringList) Contains(v string) bool {
+	return slices.Contains(self.values, v)
+}
+
+type IdList struct {
+	exportedList[*Id]
+}
+
+func NewIdList() *IdList {
+	return &IdList{
+		exportedList: *newExportedList[*Id](),
+	}
+}
+
+func (self *IdList) Contains(v *Id) bool {
+	for _, value := range self.values {
+		if value == v {
+			return true
+		}
+		if value == nil || v == nil {
+			continue
+		}
+		if value.Cmp(v) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+type IntList struct {
+	exportedList[int]
+}
+
+func NewIntList() *IntList {
+	return &IntList{
+		exportedList: *newExportedList[int](),
+	}
+}
+
+func (self *IntList) Contains(v int) bool {
+	return slices.Contains(self.values, v)
+}
+
+type Float32List struct {
+	exportedList[float32]
+}
+
+func NewFloat32List() *Float32List {
+	return &Float32List{
+		exportedList: *newExportedList[float32](),
+	}
+}
+
+func (self *Float32List) Contains(v float32) bool {
+	return slices.Contains(self.values, v)
+}
+
+type Float64List struct {
+	exportedList[float64]
+}
+
+func NewFloat64List() *Float64List {
+	return &Float64List{
+		exportedList: *newExportedList[float64](),
+	}
+}
+
+func (self *Float64List) Contains(v float64) bool {
+	return slices.Contains(self.values, v)
+}
+
+type TransferPathList struct {
+	exportedList[*TransferPath]
+}
+
+func NewTransferPathList() *TransferPathList {
+	return &TransferPathList{
+		exportedList: *newExportedList[*TransferPath](),
+	}
+}
+
+type ProviderSpecList struct {
+	exportedList[*ProviderSpec]
+}
+
+func NewProviderSpecList() *ProviderSpecList {
+	return &ProviderSpecList{
+		exportedList: *newExportedList[*ProviderSpec](),
+	}
+}
+
+type FindProvidersProviderList struct {
+	exportedList[*FindProvidersProvider]
+}
+
+func NewFindProvidersProviderList() *FindProvidersProviderList {
+	return &FindProvidersProviderList{
+		exportedList: *newExportedList[*FindProvidersProvider](),
+	}
+}
+
+type ProviderGridPointList struct {
+	exportedList[*ProviderGridPoint]
+}
+
+func NewProviderGridPointList() *ProviderGridPointList {
+	return &ProviderGridPointList{
+		exportedList: *newExportedList[*ProviderGridPoint](),
+	}
+}
+
+type LocationResultList struct {
+	exportedList[*LocationResult]
+}
+
+func NewLocationResultList() *LocationResultList {
+	return &LocationResultList{
+		exportedList: *newExportedList[*LocationResult](),
+	}
+}
+
+type LocationGroupResultList struct {
+	exportedList[*LocationGroupResult]
+}
+
+func NewLocationGroupResultList() *LocationGroupResultList {
+	return &LocationGroupResultList{
+		exportedList: *newExportedList[*LocationGroupResult](),
+	}
+}
+
+type LocationDeviceResultList struct {
+	exportedList[*LocationDeviceResult]
+}
+
+func NewLocationDeviceResultList() *LocationDeviceResultList {
+	return &LocationDeviceResultList{
+		exportedList: *newExportedList[*LocationDeviceResult](),
+	}
+}
+
+type ConnectLocationList struct {
+	exportedList[*ConnectLocation]
+}
+
+func NewConnectLocationList() *ConnectLocationList {
+	return &ConnectLocationList{
+		exportedList: *newExportedList[*ConnectLocation](),
+	}
+}
+
+type AccountWalletsList struct {
+	exportedList[*AccountWallet]
+}
+
+func NewAccountWalletsList() *AccountWalletsList {
+	return &AccountWalletsList{
+		exportedList: *newExportedList[*AccountWallet](),
+	}
+}
+
+type AccountPaymentsList struct {
+	exportedList[*AccountPayment]
+}
+
+func NewAccountPaymentsList() *AccountPaymentsList {
+	return &AccountPaymentsList{
+		exportedList: *newExportedList[*AccountPayment](),
+	}
+}
+
+type BlockedLocation struct {
+	LocationId   *Id          `json:"location_id"`
+	LocationName string       `json:"location_name"`
+	LocationType LocationType `json:"location_type"`
+	CountryCode  string       `json:"country_code"`
+}
+
+type BlockedLocationsList struct {
+	exportedList[*BlockedLocation]
+}
+
+func NewBlockedLocationsList() *BlockedLocationsList {
+	return &BlockedLocationsList{
+		exportedList: *newExportedList[*BlockedLocation](),
+	}
+}
+
+type CountryMultiplier struct {
+	CountryLocationId     *Id     `json:"country_location_id"`
+	Country               string  `json:"country"`
+	CountryCode           string  `json:"country_code"`
+	ReliabilityMultiplier float64 `json:"reliability_multiplier"`
+}
+
+type CountryMultiplierList struct {
+	exportedList[*CountryMultiplier]
+}
+
+func NewCountryMultiplierList() *CountryMultiplierList {
+	return &CountryMultiplierList{
+		exportedList: *newExportedList[*CountryMultiplier](),
+	}
+}
+
+type NetworkClientInfoList struct {
+	exportedList[*NetworkClientInfo]
+}
+
+func NewNetworkClientInfoList() *NetworkClientInfoList {
+	return &NetworkClientInfoList{
+		exportedList: *newExportedList[*NetworkClientInfo](),
+	}
+}
+
+type NetworkClientConnectionList struct {
+	exportedList[*NetworkClientConnection]
+}
+
+func NewNetworkClientConnectionList() *NetworkClientConnectionList {
+	return &NetworkClientConnectionList{
+		exportedList: *newExportedList[*NetworkClientConnection](),
+	}
+}
+
+type TransferBalanceList struct {
+	exportedList[*TransferBalance]
+}
+
+func NewTransferBalanceList() *TransferBalanceList {
+	return &TransferBalanceList{
+		exportedList: *newExportedList[*TransferBalance](),
+	}
+}
+
+type NetworkSpaceList struct {
+	exportedList[*NetworkSpace]
+}
+
+func NewNetworkSpaceList() *NetworkSpaceList {
+	return &NetworkSpaceList{
+		exportedList: *newExportedList[*NetworkSpace](),
+	}
+}
+
+type ProvideSecretKeyList struct {
+	exportedList[*ProvideSecretKey]
+}
+
+func NewProvideSecretKeyList() *ProvideSecretKeyList {
+	return &ProvideSecretKeyList{
+		exportedList: *newExportedList[*ProvideSecretKey](),
+	}
+}
+
+type ContractDetailsList struct {
+	exportedList[*ContractDetails]
+}
+
+func NewContractDetailsList() *ContractDetailsList {
+	return &ContractDetailsList{
+		exportedList: *newExportedList[*ContractDetails](),
+	}
+}
+
+type BlockActionOverrideList struct {
+	exportedList[*BlockActionOverride]
+}
+
+func NewBlockActionOverrideList() *BlockActionOverrideList {
+	return &BlockActionOverrideList{
+		exportedList: *newExportedList[*BlockActionOverride](),
+	}
+}
+
+type BlockActionList struct {
+	exportedList[*BlockAction]
+}
+
+func NewBlockActionList() *BlockActionList {
+	return &BlockActionList{
+		exportedList: *newExportedList[*BlockAction](),
+	}
+}
+
+type LeaderboardEarnersList struct {
+	exportedList[*LeaderboardEarner]
+}
+
+type AccountPointsList struct {
+	exportedList[*AccountPoint]
+}
+
+type StripePaymentIntent struct {
+	SubscriptionType string `json:"subscription_type"` // should be "monthly" or "yearly"
+	ClientSecret     string `json:"client_secret"`
+}
+
+type StripePaymentIntentList struct {
+	exportedList[*StripePaymentIntent]
+}
+
+type RedeemedBalanceCode struct {
+	BalanceCodeId    *Id       `json:"balance_code_id"`
+	BalanceByteCount ByteCount `json:"balance_byte_count"`
+	RedeemTime       *Time     `json:"redeem_time"`
+	EndTime          *Time     `json:"end_time"`
+	Secret           string    `json:"secret"`
+}
+
+type RedeemedBalanceCodeList struct {
+	exportedList[*RedeemedBalanceCode]
+}
+
+type PublicAccountApiKey struct {
+	Id         *Id    `json:"id"`
+	Name       string `json:"name"`
+	CreateTime *Time  `json:"create_time"`
+}
+
+type PublicAccountApiKeyList struct {
+	exportedList[*PublicAccountApiKey]
+}
+
+// conforms to `json.Marshaler` and `json.Unmarshaler`
+type Time struct {
+	impl time.Time
+	// store this on the object to support gomobile "equals" and "hashCode"
+	TimeStr string
+}
+
+func NewTimeUnixMilli(unixMilli int64) *Time {
+	return newTime(time.UnixMilli(unixMilli))
+}
+
+func newTime(impl time.Time) *Time {
+	return &Time{
+		impl:    impl,
+		TimeStr: impl.String(),
+	}
+}
+
+func (self *Time) String() string {
+	return self.TimeStr
+}
+
+func (self *Time) Cmp(b *Time) int {
+	if self.impl.Before(b.impl) {
+		return -1
+	}
+	if b.impl.Before(self.impl) {
+		return 1
+	}
+	return 0
+}
+
+func (self *Time) toTime() time.Time {
+	return self.impl
+}
+
+func (self *Time) UnixMilli() int64 {
+	return self.impl.UnixMilli()
+}
+
+func (self *Time) MillisUntil() int64 {
+	return int64(self.impl.Sub(time.Now()) / time.Millisecond)
+}
+
+func (self *Time) Format(layout string) string {
+	return self.impl.Format(layout)
+}
+
+func (self *Time) UnmarshalJSON(b []byte) error {
+	err := json.Unmarshal(b, &self.impl)
+	if err != nil {
+		return err
+	}
+	self.TimeStr = self.impl.String()
+	return nil
+}
+
+func (self *Time) MarshalJSON() ([]byte, error) {
+	return json.Marshal(self.impl)
+}
