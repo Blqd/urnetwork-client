@@ -1,108 +1,117 @@
-# Refactoring and Remediation Plan
+# Refactoring plan for the vendored `lib/*` libraries
 
-**Target:** `urnetwork-client`
-**Updated:** 2026-06-06
-**Status:** Active
+**Scope:** the vendored upstream libraries (`lib/connect`, `lib/sdk`,
+`lib/proxy`, `lib/userwireguard`, `lib/glog`) — **not** the client code in
+`cmd/`, `gui/`, `scripts/` (that work is described in
+[`docs/analysis.md`](analysis.md) §8 and §8.11).
+**Origin:** snapshot of 2026-06-06, committed in `8be72d7`.
+**Status as of 2026-11-04:** 5 tickets closed, 1 partial, 6 open. Statuses below
+were re-verified against the code and by running the tests on 2026-11-04.
 
-## Objective
+Legend: **DONE** — verified in the tree; **PARTIAL** — mitigated but the ticket
+is not finished; **OPEN** — not started.
 
-Restore and protect a green test baseline first, then address verified security and architecture issues in small, test-backed changes. Do not start broad cleanup until compile and integration tests are reliable.
+## Phase 0 — test baseline and bind behaviour (all DONE)
 
-## Phase 0: Test Baseline Stabilization
+### 0.1 `lib/userwireguard` bind interface drift — **DONE**
 
-Status: in progress; first pass implemented.
+Stale `Bind.Open` test adapters were updated; `go test ./...` in
+`lib/userwireguard` passes today (conn 0.005 s, device 1.194 s).
 
-### Ticket 0.1: Fix `lib/userwireguard` bind interface drift
+### 0.2 IPv4-only bind when IPv6 is unavailable — **DONE**
 
-- **Target:** `lib/userwireguard/conn`, `lib/userwireguard/device`
-- **Action:** Update test/fake binds to match `Bind.Open(bindIpv4, bindIpv6, port)` and preserve the selected IPv4 port when IPv6 bind is unavailable.
-- **Verification:** `GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...` in `lib/userwireguard`.
+`lib/userwireguard/conn/bind_std.go:122` falls back on
+`EAFNOSUPPORT`/`EADDRNOTAVAIL` instead of failing.
 
-### Ticket 0.2: Fix `lib/proxy` WireGuard test on hosts without IPv6 loopback
+### 0.3 Extender tests on ephemeral ports — **DONE**
 
-- **Target:** `lib/proxy`, via `lib/userwireguard/conn/bind_std.go`
-- **Action:** Allow IPv4-only bind to continue when IPv6 address binding returns `EADDRNOTAVAIL`.
-- **Verification:** `GOTOOLCHAIN=auto GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...` in `lib/proxy`.
+`lib/connect/extender/extender_test.go:55,62` reserves and waits for ephemeral
+TCP ports.
 
-### Ticket 0.3: Stabilize extender integration test
+### 0.4 `glog` default file sink — **DONE**
 
-- **Target:** `lib/connect/extender/extender_test.go`
-- **Action:** Replace privileged/fixed ports with ephemeral listeners and explicit readiness checks.
-- **Verification:** `GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./extender` in `lib/connect`.
+`lib/glog/glog_file.go:55` falls back to `os.TempDir()` when the log directory
+is unwritable, and `:188` registers the file sink from `init`; `lib/glog` tests
+pass.
 
-### Ticket 0.4: Restore glog default file sink behavior
+## Phase 1 — JWT
 
-- **Target:** `lib/glog/glog_file.go`
-- **Action:** Register the file sink by default and restore `os.TempDir()` as the default log directory fallback.
-- **Verification:** `GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...` in `lib/glog`.
+### 1.1 `network_id` claim — **DONE**
 
-## Phase 1: JWT Correctness and Trust Boundaries
+`lib/connect/jwt.go:33` reads `network_id` (it used to read `network_name`, a
+copy-paste bug); claims are type-asserted safely.
 
-### Ticket 1.1: Fix JWT claim parsing bug
+### 1.2 Verified JWT validation path — **OPEN**
 
-- **Target:** `lib/connect/jwt.go`
-- **Action:** Read `NetworkId` from `network_id`, not `network_name`; add table-driven tests for every parsed claim.
-- **Verification:** forged/malformed/missing-claim tests prove parser behavior is explicit.
+`parseByJwtClientId` still calls `ParseUnverified`. The client only feeds it a
+token obtained from its own API over TLS, and unverified parsing is documented
+as non-authoritative, but the SDK path (`ClientAuth.ClientId`) remains
+unverified. Decision needed: verified validation vs. explicit “parse-only”
+contract.
 
-### Ticket 1.2: Define verified JWT validation path
+## Phase 2 — egress policy
 
-- **Target:** `lib/connect/jwt.go`, `lib/connect/transport.go`, `lib/connect/ip_remote_multi_client_api.go`, SDK JWT helpers.
-- **Action:** Separate parse-only display helpers from trust-sensitive validation helpers. Add a verified parser using the platform's public key or configured secret.
-- **Verification:** tests reject unsigned, forged, wrong-algorithm, expired, and wrong-audience tokens where validation is required.
+### 2.1 Explicit plaintext-egress policy with tests — **OPEN**
 
-## Phase 2: Network Security Policy
+`egressSecurityPolicy.inspect` exists in `lib/connect/ip_security.go:57-76`
+(UDP/53 and TCP/80 are temporarily allowed), but there are no tests for the
+policy and no decision whether plaintext egress should be blocked by default.
 
-### Ticket 2.1: Make plaintext egress policy explicit
+### 2.2 DoH/DoT before blocking UDP/53 — **OPEN**
 
-- **Target:** `lib/connect/ip_security.go`
-- **Action:** Decide whether UDP/53 and TCP/80 are allowed, blocked, or upgraded. Convert the decision into unit tests for `egressSecurityPolicy.inspect`.
-- **Verification:** tests cover DNS, HTTP, HTTPS, DoT, mail ports, user ports, private IPs, blocked IPv4s, and IPv6 behavior.
+Not implemented. Plaintext DNS/HTTP currently work; nothing is blocked, so the
+client cannot yet be switched to “block plaintext” mode without breaking
+resolution.
 
-### Ticket 2.2: Add protocol upgrade only after policy is tested
+## Phase 3 — packet construction
 
-- **Target:** `lib/connect/net_http_doh.go`, IP egress path.
-- **Action:** If DNS must work in public mode, implement DoH/DoT translation before removing UDP/53.
-- **Verification:** packet trace or integration test proves no plaintext DNS/HTTP egress in the protected mode.
+### 3.1 No panic on input-derived data — **PARTIAL**
 
-## Phase 3: Panic and Error Handling
+Panics still exist: 9 `panic(` in `lib/connect/ip_packet.go` and 4 in
+`lib/connect/ip.go`. The client-side mitigation is containment only —
+`recover` around packet parsing at `lib/connect/ip.go:2999` turns a malformed
+peer packet into an error. Finishing the ticket means error-returning APIs and
+dropping invalid packets at callers.
 
-### Ticket 3.1: Remove panic-on-input packet paths
+### 3.2 Sentinel errors instead of `fmt.Errorf("Timeout.")` — **OPEN**
 
-- **Target:** `lib/connect/ip_packet.go` and callers.
-- **Action:** Change packet builders/parsers that handle network-derived metadata to return errors instead of panicking.
-- **Verification:** malformed protocol/version tests and fuzz target prove invalid inputs return errors.
+Sites: `lib/connect/net_http.go:710,755,788`;
+`lib/connect/transport_pt.go:753,767`. Callers cannot reliably distinguish a
+timeout from other failures.
 
-### Ticket 3.2: Introduce sentinel/wrapped errors where useful
+## Phase 4 — hygiene
 
-- **Target:** `lib/connect/net_http.go`, provider/auth paths.
-- **Action:** Replace repeated `fmt.Errorf("Timeout.")` with sentinel errors; use `%w` where callers need `errors.Is` or `errors.As`.
-- **Verification:** tests cover timeout detection and wrapped API errors.
+### 4.1 Trailing `\n` in `glog.*f` calls — **OPEN**
 
-## Phase 4: Cleanup After Behavior Is Stable
+90 matches across `lib/` and `cmd/`. `glog` adds its own newline, so the
+messages contain a blank line. Mechanical cleanup, do it after behaviour fixes.
 
-### Ticket 4.1: Scope and clean trailing newlines in glog calls
+### 4.2 `message_pool` ownership audit — **OPEN**
 
-- **Target:** non-generated production Go files.
-- **Action:** Remove trailing `\n` only from `glog.*f` format strings where glog already appends line endings.
-- **Verification:** grep production files for `glog.*f` format strings ending in `\n`.
+`lib/connect/message_pool.go` has `Get`/`Return`, but ownership rules are not
+documented or enforced (double-return / use-after-return are not detected).
 
-### Ticket 4.2: Audit message pool ownership
-
-- **Target:** `lib/connect/message_pool.go` consumers.
-- **Action:** Document ownership at risky async boundaries and add debug-only leak detection if practical.
-- **Verification:** focused tests for error paths that previously could skip `MessagePoolReturn`.
-
-## Verification Protocol
-
-Run module tests sequentially because several packages use local ports:
+## Verification protocol
 
 ```bash
-cd lib/userwireguard && GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
-cd lib/proxy && GOTOOLCHAIN=auto GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
-cd lib/connect && GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
-cd lib/sdk && GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
-cd lib/glog && GOTOOLCHAIN=go1.25.0 GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
-cd cmd/urnetwork-vpn && GOTOOLCHAIN=auto GOCACHE=/tmp/urnetwork-go-cache /usr/local/go/bin/go test ./...
+# client tests and static checks (used by CI)
+make test
+make vet
+
+# the vendored libraries, module by module, sequentially
+GOTOOLCHAIN=go1.26.0 go test ./...          # run inside each lib/* module
 ```
 
-Do not run `lib/connect`, `lib/sdk`, and `lib/proxy` integration tests in parallel until their fixed-port assumptions are removed.
+`Makefile` pins `GOTOOLCHAIN=go1.26.0` (the earlier revision of this document
+mentioned `go1.25.0` — that was the toolchain cache of the original machine).
+The integration tests in `lib/connect` / `lib/proxy` bind fixed local ports, so
+they are **excluded from CI** on purpose and must not be run concurrently; run
+them module-by-module when touching those packages.
+
+## Notes
+
+- The vendored trees are plain files, not submodules; see
+  [`THIRD_PARTY.md`](../THIRD_PARTY.md) for the recorded base commits and the
+  manual-sync procedure.
+- [`docs/code-review.md`](code-review.md) documents the original findings; this
+  file tracks their status. Keep both in sync when closing a ticket.

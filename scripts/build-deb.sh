@@ -3,7 +3,7 @@
 # Build a Debian package for urnetwork-client.
 #
 # Usage:
-#   scripts/build-deb.sh              # version 0.1.0-1
+#   scripts/build-deb.sh              # version 0.1.1-1
 #   VERSION=0.2.0-1 scripts/build-deb.sh
 #
 # The package is self-contained (binaries + GUI + helpers) and installs under
@@ -17,7 +17,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
 PACKAGE="urnetwork-client"
-VERSION="${VERSION:-0.1.0-1}"
+VERSION="${VERSION:-0.1.1-1}"
 ARCH="${ARCH:-$(dpkg --print-architecture)}"
 LIBDIR="/usr/lib/urnetwork"
 DIST_DIR="$PROJECT_DIR/dist"

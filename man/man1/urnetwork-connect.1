@@ -1,4 +1,4 @@
-.TH URNETWORK-CONNECT 1 "2026-11-04" "urnetwork-client 0.1.0" "User Commands"
+.TH URNETWORK-CONNECT 1 "2026-11-04" "urnetwork-client 0.1.1" "User Commands"
 .SH NAME
 urnetwork-connect \- start, stop and manage the URnetwork client
 .SH SYNOPSIS
@@ -11,6 +11,9 @@ urnetwork-connect \- start, stop and manage the URnetwork client
 .B on
 Replay the last used mode (default
 .IR socks ).
+.TP
+.B help
+Print the command list and exit.
 .TP
 .B socks
 Start the SOCKS5 proxy on
@@ -35,6 +38,8 @@ Print the countries and cities offered by the network.
 .TP
 .B register EMAIL PASSWORD
 Register the local account and store the password in the desktop secret store.
+Must be run as your normal user, not as root.  The registration step itself
+passes the password to the upstream provider binary on its command line.
 .TP
 .B verify CODE
 Verify the account with the code sent by e-mail.
@@ -54,7 +59,7 @@ Preferred exit city.
 .SH FILES
 .TP
 .I ~/.config/urnetwork/auth
-account name and network
+account name and network; the password is kept in the desktop secret store
 .TP
 .I ~/.config/urnetwork/state.json
 state of the running engine
@@ -71,10 +76,25 @@ saved default route, restored by
 credentials; normally loaded from the auth file and the secret store
 .TP
 .B URNETWORK_CONFIG_DIR
-override the configuration directory
+override the configuration directory (honoured in SOCKS mode; in VPN mode the
+root copy always uses the invoking user's
+.I ~/.config/urnetwork ).
 .TP
 .B URNETWORK_CREDENTIALS_HELPER
 path to the Secret Service helper
+.TP
+.B URNETWORK_KEYRING
+set to
+.I 0
+to keep the password in the auth file instead of the secret store
+.TP
+.B URNETWORK_ASKPASS_TIMEOUT
+seconds to wait for the sudo password window (default 180)
+.TP
+.B URNETWORK_FORCE_ASKPASS
+set to
+.I 1
+to always use the askpass window instead of a passwordless sudo rule
 .SH SEE ALSO
 .BR urnetwork-gui (1),
 .BR urnetwork-vpn (1)

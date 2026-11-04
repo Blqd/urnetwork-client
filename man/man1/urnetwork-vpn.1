@@ -1,4 +1,4 @@
-.TH URNETWORK-VPN 1 "2026-11-04" "urnetwork-client 0.1.0" "User Commands"
+.TH URNETWORK-VPN 1 "2026-11-04" "urnetwork-client 0.1.1" "User Commands"
 .SH NAME
 urnetwork-vpn \- URnetwork TUN engine
 .SH SYNOPSIS
@@ -81,6 +81,14 @@ Log every packet (slow; troubleshooting only).
 .B --state-file PATH
 Write engine state as JSON (env
 .IR URNETWORK_STATE_FILE ).
+When the engine runs as root, only paths inside the invoking user's
+configuration directory are accepted; other paths are ignored and
+.I ~/.config/urnetwork/state.json
+is used instead.
+.SH COMMANDS
+.TP
+.B list-locations
+Print the countries, regions and cities offered by the network and exit.
 .SH EXIT STATUS
 Non-zero on invalid MTU, missing credentials, unavailable exit location or a
 failed engine.

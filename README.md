@@ -99,8 +99,10 @@ sudo apt-get -f install   # доустановить зависимости, е�
 
 ## Безопасность
 
-- Пароль не попадает в `argv`: и GUI, и скрипт передают его только через
-  окружение (`ps` его не показывает).
+- Пароль не попадает в `argv` GUI и движков: он передаётся только через
+  окружение или stdin helper'а (`ps` его не показывает). Исключение — шаг
+  `register`: он передаёт пароль сторонней библиотеке upstream в `argv`, поэтому
+  в момент регистрации пароль виден в `ps`.
 - Пароль URnetwork **по умолчанию хранится в системном хранилище секретов**
   (GNOME Keyring / Secret Service) через `scripts/urnetwork-credentials.py`.
   В `~/.config/urnetwork/auth` остаются только `USER_AUTH`/`NETWORK_NAME`;
@@ -184,9 +186,34 @@ sudo apt-get -f install   # доустановить зависимости, е�
   при падении (раньше `wait $pid` под `set -e` убивал скрипт до retry);
   восстановление маршрута и удаление stale TUN; `register` качает бинарник через
   `mktemp` и раскладывает без старого бага `tar A || tar B && cp`.
-- **Тесты/сборка**: `make test` (Go-тесты клиента + pytest + `bash -n`),
-  `make build` (PIE, `-s -w`), `make install`, `make deb` (пакет
-  `dist/urnetwork-client_*.deb`), CI-workflow.
+- **Тесты/сборка**: `make test` (Go-тесты клиента + pytest, 44 теста + `bash -n`
+  + `py_compile`), `make build` (PIE, `-s -w`), `make install`, `make deb`
+  (пакет `dist/urnetwork-client_*.deb`), CI-workflow.
+
+### После ревью (коммит `0429d4a`)
+
+Подробно — [`docs/analysis.md`](docs/analysis.md), п. 8.11.
+
+- **Привилегии**: из sudoers `env_keep` убраны `USER_AUTH`, `PASSWORD`,
+  `URNETWORK_CONFIG_DIR`, `URNETWORK_STATE_FILE` — остался только
+  `URNETWORK_VERBOSE`. Креды идут root-копии файлом `0600`, который проверяется
+  по владельцу и удаляется; `register` под root запрещён; state-файл от root
+  ограничен каталогом пользователя.
+- **Живость процессов**: `status`/`off` проверяют `/proc/<pid>` и
+  `/proc/<pid>/exe` вместо `kill -0` (который даёт `EPERM` для root-движка);
+  широкий `pkill -f` заменён на адресный `kill_engines_by_exe`.
+- **Остановка**: `sender.Stop()` больше не досылает очередь (раньше мог ждать
+  до 2048 × 15 c) — воркеры завершаются по сигналу, остаток учитывается в
+  `txDropped`.
+- **GUI**: хвост stdout без `\n` сбрасывается при `IO_HUP`/EOF (последние строки
+  перед падением движка не теряются), `TextView` ограничен
+  `LOG_BUFFER_MAX_CHARS = 400 000`.
+- **Прочее**: `restore_default_route` валидирует журнал маршрута,
+  `list-locations` возвращает код движка, `--city` не подменяется `append`'ом к
+  слайсу флага.
+- **Тесты**: `tests/test_connect_script_static.py` (статический аудит скриптов),
+  Go-тесты `TestResolveStateFilePathIn` и `TestPacketSenderStopDropsQueued`,
+  GUI-тесты на сброс хвоста и лимит буфера — всего 44 pytest.
 
 ## Известные ограничения
 
@@ -196,7 +223,17 @@ sudo apt-get -f install   # доустановить зависимости, е�
 - `lib/connect` содержит исторические проблемы, разобранные в
   [`docs/code-review.md`](docs/code-review.md) и
   [`docs/refactoring-plan.md`](docs/refactoring-plan.md); они не входят в
-  текущую итерацию.
+  текущую итерацию (закрыто 5 задач из 12, 1 частично).
+- `register` — единственное место, где пароль оказывается в `argv` (так устроен
+  upstream-регистратор).
+- GUI читает keyring на главном потоке GTK: если сервис секретов завис, старт
+  GUI может задержаться до 20 c (таймаут).
+- GUI не учитывает `URNETWORK_CONFIG_DIR` (использует `~/.config/urnetwork`) —
+  расхождение с CLI-скриптом.
+- В VPN-режиме root-копия всегда использует каталог пользователя из `SUDO_USER`
+  (`~/.config/urnetwork`): нестандартный `URNETWORK_CONFIG_DIR` в root-режиме не
+  подхватывается (в SOCKS-режиме работает). Выбор сделан осознанно — иначе
+  каталог конфигурации от пользователя стал бы входом для root.
 
 ## Документация
 
@@ -212,9 +249,10 @@ sudo apt-get -f install   # доустановить зависимости, е�
 ## Проверка после изменений
 
 ```bash
-make test            # Go + GUI + синтаксис скриптов
-make build           # build/urnetwork-vpn, build/socksproxy
-python3 -m py_compile gui/urnetwork-gui.py
+make test            # go test + pytest (44) + bash -n + py_compile
+make build           # build/urnetwork-vpn, build/socksproxy (PIE, -s -w)
+make deb             # dist/urnetwork-client_*.deb (lintian должен быть чист)
+sudo -n /usr/local/libexec/urnetwork/urnetwork-connect.sh status   # если ставили NOPASSWD
 ```
 
 Live-проверка SOCKS5 (egress-IP должен отличаться от прямого; пароль берётся

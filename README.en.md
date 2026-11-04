@@ -92,8 +92,11 @@ Credentials can also be passed via the environment instead of the file:
 
 ## Security
 
-- The password never appears in `argv`: both the GUI and the script pass it via
-  the environment only (`ps` does not show it).
+- The password never appears in `argv` of the GUI or the engines: it is passed
+  via the environment or the helper's stdin (`ps` does not show it). The one
+  exception is `register`: it hands the password to the upstream provider binary
+  on its command line, so the password is briefly visible in `ps` during
+  registration.
 - The URnetwork password is **stored in the system secret store** (GNOME
   Keyring / Secret Service) by default, through
   `scripts/urnetwork-credentials.py`. `~/.config/urnetwork/auth` keeps only
@@ -167,9 +170,37 @@ The full analysis with numbers is in [`docs/analysis.md`](docs/analysis.md).
   killed the script before any retry); the route is restored and a stale TUN
   is removed; `register` downloads the binary via `mktemp` and unpacks it
   without the old `tar A || tar B && cp` bug.
-- **Tests/build**: `make test` (Go client tests + pytest + `bash -n`),
-  `make build` (PIE, `-s -w`), `make install`, `make deb`
+- **Tests/build**: `make test` (Go client tests + pytest, 44 tests + `bash -n`
+  + `py_compile`), `make build` (PIE, `-s -w`), `make install`, `make deb`
   (`dist/urnetwork-client_*.deb`), CI workflow, release workflow for tags.
+
+### After the review (commit `0429d4a`)
+
+Full details in [`docs/analysis.md`](docs/analysis.md), §8.11.
+
+- **Privileges**: the sudoers `env_keep` no longer carries `USER_AUTH`,
+  `PASSWORD`, `URNETWORK_CONFIG_DIR` or `URNETWORK_STATE_FILE` — only
+  `URNETWORK_VERBOSE`. Credentials reach the root launcher in a `0600` file that
+  is ownership-checked and deleted after reading; `register` refuses to run as
+  root; the root engine only accepts a state file inside the user's config
+  directory.
+- **Process liveness**: `status`/`off` check `/proc/<pid>` and
+  `/proc/<pid>/exe` instead of `kill -0` (which reports `EPERM` for the
+  root-owned engine); the broad `pkill -f` is replaced with the targeted
+  `kill_engines_by_exe`.
+- **Shutdown**: `sender.Stop()` no longer drains the queue (it could wait up to
+  2048 × 15 s) — workers exit on a signal and the remainder is counted in
+  `txDropped`.
+- **GUI**: a trailing stdout line without `\n` is flushed on `IO_HUP`/EOF (the
+  last lines before an engine crash are no longer lost); the `TextView` is
+  capped at `LOG_BUFFER_MAX_CHARS = 400 000`.
+- **Misc**: `restore_default_route` validates the route journal,
+  `list-locations` propagates the engine exit code, `--city` is not appended to
+  the flag slice any more.
+- **Tests**: `tests/test_connect_script_static.py` (static audit of the
+  scripts), Go tests `TestResolveStateFilePathIn` and
+  `TestPacketSenderStopDropsQueued`, GUI tests for the stdout tail flush and the
+  buffer cap — 44 pytest tests in total.
 
 ## Known limitations
 
@@ -179,7 +210,17 @@ The full analysis with numbers is in [`docs/analysis.md`](docs/analysis.md).
 - `lib/connect` contains historical issues described in
   [`docs/code-review.md`](docs/code-review.md) and
   [`docs/refactoring-plan.md`](docs/refactoring-plan.md); they are outside this
-  iteration.
+  iteration (5 of 12 tickets closed, 1 partial).
+- `register` is the only place where the password ends up in `argv` (that is how
+  the upstream registrar works).
+- The GUI reads the keyring on the GTK main thread: if the secret service hangs,
+  GUI start can be delayed by up to 20 s (timeout).
+- The GUI ignores `URNETWORK_CONFIG_DIR` (it uses `~/.config/urnetwork`) — a
+  divergence from the CLI script.
+- In VPN mode the root copy always uses the invoking user's directory from
+  `SUDO_USER` (`~/.config/urnetwork`): a custom `URNETWORK_CONFIG_DIR` is not
+  honoured in root mode (it works in SOCKS mode). This is deliberate — otherwise
+  a user-supplied directory would become root input.
 
 ## Documentation
 
@@ -195,9 +236,10 @@ The full analysis with numbers is in [`docs/analysis.md`](docs/analysis.md).
 ## Checking after changes
 
 ```bash
-make test            # Go + GUI + script syntax
-make build           # build/urnetwork-vpn, build/socksproxy
-python3 -m py_compile gui/urnetwork-gui.py
+make test            # go test + pytest (44) + bash -n + py_compile
+make build           # build/urnetwork-vpn, build/socksproxy (PIE, -s -w)
+make deb             # dist/urnetwork-client_*.deb (lintian must be clean)
+sudo -n /usr/local/libexec/urnetwork/urnetwork-connect.sh status   # if NOPASSWD was installed
 ```
 
 Live SOCKS5 check (the egress IP must differ from the direct one; the password
