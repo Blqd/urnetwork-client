@@ -1,5 +1,7 @@
 # URnetwork VPN client для Ubuntu
 
+[![ci](https://github.com/Blqd/urnetwork-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Blqd/urnetwork-client/actions/workflows/ci.yml)
+
 Клиент P2P-VPN на базе URnetwork: Go-стек (`lib/connect`, `lib/sdk`, `lib/proxy`),
 CLI/демоны и GTK3-GUI на Python.
 
@@ -19,6 +21,9 @@ CLI/демоны и GTK3-GUI на Python.
 ## Быстрый старт
 
 ```bash
+git clone https://github.com/Blqd/urnetwork-client.git
+cd urnetwork-client
+
 # 1. Сборка (нужен Go >= 1.26: make ставит GOTOOLCHAIN=go1.26.0)
 make build
 
