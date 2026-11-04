@@ -51,7 +51,8 @@ jobs:
             sha256sum out/urnetwork-vpn-linux-amd64 \
                       out/socksproxy-linux-amd64 \
                       "out/$BUNDLE" | sed 's|  out/|  |'
-            sha256sum "$deb"
+            sha256sum "$deb" | sed 's|  dist/|  |'
+
           } > SHA256SUMS
           ls -lh out "$deb" SHA256SUMS
 
