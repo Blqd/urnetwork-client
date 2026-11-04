@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Python test dependencies
+        run: python3 -m pip install --disable-pip-version-check pytest
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build binaries
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Build Debian package
+        run: VERSION="$VERSION" make deb
+
+      - name: Package release files
+        run: |
+          set -eu
+          mkdir -p out
+          cp build/urnetwork-vpn out/urnetwork-vpn-linux-amd64
+          cp build/socksproxy out/socksproxy-linux-amd64
+          BUNDLE="urnetwork-client-${VERSION}-linux-amd64.tar.gz"
+          tar -czf "out/$BUNDLE" -C build urnetwork-vpn socksproxy
+          deb="dist/urnetwork-client_${VERSION}_amd64.deb"
+          {
+            sha256sum out/urnetwork-vpn-linux-amd64 \
+                      out/socksproxy-linux-amd64 \
+                      "out/$BUNDLE" | sed 's|  out/|  |'
+            sha256sum "$deb"
+          } > SHA256SUMS
+          ls -lh out "$deb" SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          deb="dist/urnetwork-client_${VERSION}_amd64.deb"
+          bundle="out/urnetwork-client-${VERSION}-linux-amd64.tar.gz"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber \
+              "$deb" \
+              out/urnetwork-vpn-linux-amd64 \
+              out/socksproxy-linux-amd64 \
+              "$bundle" \
+              SHA256SUMS
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "urnetwork-client ${VERSION}" \
+              --generate-notes \
+              "$deb" \
+              out/urnetwork-vpn-linux-amd64 \
+              out/socksproxy-linux-amd64 \
+              "$bundle" \
+              SHA256SUMS
+          fi
+          gh release view "$GITHUB_REF_NAME" --json url,assets \
+            -q '.url, (.assets[] | "\(.name)  \(.size) bytes")'

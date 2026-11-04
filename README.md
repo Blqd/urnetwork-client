@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/Blqd/urnetwork-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Blqd/urnetwork-client/actions/workflows/ci.yml)
 
+**[Русский](README.md) | [English](README.en.md)**
+
 Клиент P2P-VPN на базе URnetwork: Go-стек (`lib/connect`, `lib/sdk`, `lib/proxy`),
 CLI/демоны и GTK3-GUI на Python.
 
@@ -40,11 +42,24 @@ sudo scripts/urnetwork-connect.sh off      # остановить всё и ве
 
 GUI: `scripts/install-desktop-entry.sh` (пункт меню), затем запуск «URnetwork VPN».
 
-## Установка из .deb
+## Готовые сборки
+
+Готовые `.deb` и отдельные бинарники `linux-amd64` (`urnetwork-vpn`,
+`socksproxy`) лежат в
+[GitHub Releases](https://github.com/Blqd/urnetwork-client/releases) вместе с
+файлом `SHA256SUMS`. Каждый релиз собирается CI по тегу `v*`
+([`.github/workflows/release.yml`](.github/workflows/release.yml)).
+
+Собрать пакет самостоятельно:
 
 ```bash
 make build          # бинарники нужны для упаковки
 make deb            # -> dist/urnetwork-client_<версия>_<arch>.deb
+```
+
+## Установка из .deb
+
+```bash
 sudo dpkg -i dist/urnetwork-client_*.deb
 sudo apt-get -f install   # доустановить зависимости, если dpkg попросит
 ```
