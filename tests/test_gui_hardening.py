@@ -221,5 +221,70 @@ class GuiHardeningTest(unittest.TestCase):
         self.assertEqual(calls, [True])
 
 
+    def test_stdout_hup_flushes_partial_line(self):
+        """A crash ends the stream without a newline; that tail must be kept."""
+        app = self.app()
+        lines = []
+        app.handle_line = lines.append
+        app._stdout_buf = b"last words without newline"
+
+        self.assertFalse(app._on_stdout_readable(0, self.gui.GLib.IO_HUP))
+        self.assertEqual(lines, ["last words without newline"])
+        self.assertEqual(app._stdout_buf, b"")
+
+    def test_stdout_eof_flushes_partial_line(self):
+        app = self.app()
+        lines = []
+        app.handle_line = lines.append
+        r, w = os.pipe()
+        os.write(w, b"partial tail")
+        os.close(w)
+        try:
+            app._stdout_buf = b""
+            self.assertTrue(app._on_stdout_readable(r, self.gui.GLib.IO_IN))
+            self.assertFalse(app._on_stdout_readable(r, self.gui.GLib.IO_IN))
+        finally:
+            os.close(r)
+        self.assertEqual(lines, ["partial tail"])
+
+    def test_log_buffer_is_capped(self):
+        app = self.app()
+        written = []
+        app._write_log_line = lambda msg: written.append(msg)
+
+        class _Buffer:
+            def __init__(self):
+                self.text = ""
+
+            def get_end_iter(self):
+                return len(self.text)
+
+            def get_start_iter(self):
+                return 0
+
+            def get_char_count(self):
+                return len(self.text)
+
+            def get_iter_at_offset(self, offset):
+                return offset
+
+            def insert(self, at, data):
+                self.text = self.text[:at] + data
+
+            def delete(self, start, end):
+                self.text = self.text[:start] + self.text[end:]
+
+            def create_mark(self, *args, **kwargs):
+                return None
+
+        app.log_buffer = _Buffer()
+        app.log_view = types.SimpleNamespace(scroll_to_mark=lambda *a: None)
+        app._pending_log = ["x" * 1000] * 1000
+
+        app._flush_log()
+
+        self.assertLessEqual(len(app.log_buffer.text), self.gui.LOG_BUFFER_MAX_CHARS)
+
+
 if __name__ == "__main__":
     unittest.main()

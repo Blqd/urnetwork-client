@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -247,6 +248,9 @@ func main() {
 			if err := validateMtu(cfg.mtu); err != nil {
 				return err
 			}
+			// A root engine must never write or delete an arbitrary path just
+			// because URNETWORK_STATE_FILE said so.
+			cfg.stateFile = resolveStateFilePath(cfg.stateFile)
 
 			jwt, err := login(ctx, cfg.apiURL, cfg.userAuth, cfg.password)
 			if err != nil {
@@ -309,7 +313,11 @@ func main() {
 			var addedBypasses []string
 			ipv6Blocked := false
 			if !cfg.noRoute {
-				bypassCIDRs := append(cfg.bypass.Value(), resolveBypassHosts(ctx)...)
+				// Clone the flag's slice: StringSlice.Value() returns the
+				// internal backing array, so appending to it is a footgun.
+				bypassCIDRs := make([]string, 0, len(cfg.bypass.Value())+8)
+				bypassCIDRs = append(bypassCIDRs, cfg.bypass.Value()...)
+				bypassCIDRs = append(bypassCIDRs, resolveBypassHosts(ctx)...)
 				var setupErr error
 				addedBypasses, setupErr = setupRouting(cfg.tunName, tunPrefix, bypassCIDRs, cfg.mtu, cfg.blockIPv6)
 				if setupErr != nil {
@@ -546,9 +554,8 @@ type packetSender struct {
 	queue   chan []byte
 	stats   *trafficStats
 	verbose bool
-
-	mu      sync.Mutex
-	stopped bool
+	stop    chan struct{}
+	stopped atomic.Bool
 	wg      sync.WaitGroup
 }
 
@@ -565,19 +572,24 @@ func newPacketSender(workers, queueSize int, timeout time.Duration, stats *traff
 		queue:   make(chan []byte, queueSize),
 		stats:   stats,
 		verbose: verbose,
+		stop:    make(chan struct{}),
 	}
 	s.wg.Add(workers)
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer s.wg.Done()
-			for packet := range s.queue {
-				if s.sendFn(packet, s.timeout) {
-					s.stats.txSent.Add(1)
-					continue
-				}
-				s.stats.txFailed.Add(1)
-				if s.verbose {
-					fmt.Fprintln(os.Stderr, sendPacketFailureDiagnostic(packet))
+			for {
+				select {
+				case packet := <-s.queue:
+					if s.stopped.Load() {
+						// shutting down: drop instead of blocking on the network
+						s.stats.txDropped.Add(1)
+						continue
+					}
+					s.deliver(packet)
+				case <-s.stop:
+					s.dropQueued()
+					return
 				}
 			}
 		}()
@@ -585,12 +597,35 @@ func newPacketSender(workers, queueSize int, timeout time.Duration, stats *traff
 	return s
 }
 
-// Enqueue never blocks. It returns false when the queue is full or closed, and
-// counts the packet as dropped so callers cannot forget the accounting.
+func (s *packetSender) deliver(packet []byte) {
+	if s.sendFn(packet, s.timeout) {
+		s.stats.txSent.Add(1)
+		return
+	}
+	s.stats.txFailed.Add(1)
+	if s.verbose {
+		fmt.Fprintln(os.Stderr, sendPacketFailureDiagnostic(packet))
+	}
+}
+
+// dropQueued discards packets that were still buffered when Stop was called:
+// graceful shutdown must not wait for the whole queue to drain over the network.
+func (s *packetSender) dropQueued() {
+	for {
+		select {
+		case <-s.queue:
+			s.stats.txDropped.Add(1)
+		default:
+			return
+		}
+	}
+}
+
+// Enqueue never blocks. It returns false when the queue is full or the sender
+// has stopped, and counts the packet as dropped so callers cannot forget the
+// accounting.
 func (s *packetSender) Enqueue(packet []byte) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.stopped {
+	if s.stopped.Load() {
 		s.stats.txDropped.Add(1)
 		return false
 	}
@@ -608,17 +643,13 @@ func (s *packetSender) queueLen() int {
 	return len(s.queue)
 }
 
-// Stop closes the queue and waits for in-flight sends to finish. It is safe to
-// call more than once.
+// Stop asks the workers to finish, drops whatever is still queued and waits for
+// the in-flight sends only. It is safe to call more than once.
 func (s *packetSender) Stop() {
-	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
+	if s.stopped.Swap(true) {
 		return
 	}
-	s.stopped = true
-	close(s.queue)
-	s.mu.Unlock()
+	close(s.stop)
 	s.wg.Wait()
 }
 
@@ -659,6 +690,46 @@ func writeStateFile(path string, st stateFile) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// resolveStateFilePath keeps a root-run engine from writing (and later deleting)
+// an arbitrary path supplied through the environment. The GUI sets
+// URNETWORK_STATE_FILE for the user-level process; when the engine runs as root
+// through sudo only the invoking user's config dir is trusted, and the default
+// path is derived from SUDO_UID so state reporting keeps working even when the
+// variable is not preserved by sudo.
+func resolveStateFilePath(configured string) string {
+	if os.Geteuid() != 0 {
+		return configured
+	}
+	trusted := ""
+	if uid := os.Getenv("SUDO_UID"); uid != "" {
+		if u, err := user.LookupId(uid); err == nil && u.HomeDir != "" && u.HomeDir != "/root" {
+			trusted = filepath.Join(u.HomeDir, ".config", "urnetwork")
+		}
+	}
+	return resolveStateFilePathIn(configured, trusted)
+}
+
+// resolveStateFilePathIn is the pure part of resolveStateFilePath, split out so
+// the trust rules can be tested without running as root.
+func resolveStateFilePathIn(configured, trusted string) string {
+	if trusted == "" {
+		return ""
+	}
+	if configured == "" {
+		return filepath.Join(trusted, "state.json")
+	}
+	abs, err := filepath.Abs(configured)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(trusted, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		fmt.Fprintf(os.Stderr, "warning: ignoring state-file %q: outside %s\n", configured, trusted)
+		return ""
+	}
+	return abs
 }
 
 func sendPacketFailureDiagnostic(packet []byte) string {

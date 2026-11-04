@@ -58,7 +58,12 @@ cat > "$tmp" <<EOF
 # and the binaries in build/ are intentionally NOT sudo-whitelisted: they are
 # writable by the invoking user, so trusting them here would be passwordless
 # root.  Re-run the installer after rebuilding or editing the launcher.
-Defaults!$DEST env_keep += "USER_AUTH PASSWORD URNETWORK_CONFIG_DIR URNETWORK_STATE_FILE URNETWORK_VERBOSE"
+#
+# No credentials or paths are kept from the caller's environment: the launcher
+# forwards the account via a 0600 credentials file and the engine derives its
+# state file from SUDO_UID, so URNETWORK_STATE_FILE/URNETWORK_CONFIG_DIR cannot
+# be used to make the root engine write or delete an arbitrary file.
+Defaults!$DEST env_keep += "URNETWORK_VERBOSE"
 $TARGET_USER ALL=(root) NOPASSWD: $DEST
 EOF
 

@@ -28,8 +28,67 @@ NC='\033[0m'
 
 mkdir -p "$CONFIG_DIR"
 
+# Credential files left behind by a cancelled sudo prompt are short-lived.
+find "$CONFIG_DIR" -maxdepth 1 -name '.creds.*' -mmin +1 -delete 2>/dev/null || true
+
+# /proc-based liveness checks. `kill -0` reports EPERM for a root-owned engine
+# started from a user shell, which used to make `status` claim the VPN was off.
+pid_alive() {
+    local pid="${1:-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [[ -d "/proc/$pid" ]]
+}
+
+# Alive and either our binary or an executable we are not allowed to inspect
+# (a root engine seen from a user shell).  Used for read-only status checks.
+pid_is_expected() {
+    local pid="${1:-}" want="${2:-}" exe
+    pid_alive "$pid" || return 1
+    exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    [[ -z "$exe" || "$exe" == *"$want"* ]]
+}
+
+# Kill only engine processes whose executable we can verify, never an arbitrary
+# pid that merely appears in a pid file.
+kill_engines_by_exe() {
+    local want="$1" pid exe
+    for pid in $(pgrep -f "$want" 2>/dev/null || true); do
+        exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        case "$exe" in
+            */"$want") ;;
+            *) continue ;;
+        esac
+        kill "$pid" 2>/dev/null || true
+    done
+}
+
+# The launcher hands credentials to the root copy through a 0600 file instead of
+# sudo env_keep: a user-controlled environment let any process running as the
+# user redirect the root engine's state file (write/delete as root).
+consume_creds_file() {
+    local path="${1:-}" line key value owner
+    [[ -f "$path" ]] || return 0
+    owner="$(stat -c %u "$path" 2>/dev/null || echo 0)"
+    if [[ $EUID -eq 0 && -n "${SUDO_UID:-}" && "$owner" != "$SUDO_UID" ]]; then
+        echo -e "${RED}⚠ ignoring credentials file with unexpected owner${NC}" >&2
+        rm -f "$path" 2>/dev/null || true
+        return 0
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        key="${line%%=*}"; value="${line#*=}"
+        case "$key" in
+            USER_AUTH) USER_AUTH="$value" ;;
+            PASSWORD) PASSWORD="$value" ;;
+        esac
+    done < "$path"
+    rm -f "$path" 2>/dev/null || true
+    export USER_AUTH PASSWORD
+}
+
 TIMEOUT=""
 RETRY=3
+CREDS_FILE_ARG=""
 PARSED_ARGS=()
 SKIP_NEXT=false
 for ((i=1; i<=$#; i++)); do
@@ -47,11 +106,21 @@ for ((i=1; i<=$#; i++)); do
             RETRY="${!next}"
             SKIP_NEXT=true
         fi
+    elif [[ "$arg" == "--creds-file" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            CREDS_FILE_ARG="${!next}"
+            SKIP_NEXT=true
+        fi
     else
         PARSED_ARGS+=("$arg")
     fi
 done
 set -- "${PARSED_ARGS[@]}"
+
+# Only root consumes the launcher's credentials file; the user-level copy just
+# forwards the path to the installed (root-owned) script.
+[[ -n "$CREDS_FILE_ARG" ]] && consume_creds_file "$CREDS_FILE_ARG"
 
 TIMEOUT_CMD=""
 [[ -n "$TIMEOUT" ]] && TIMEOUT_CMD="timeout $TIMEOUT"
@@ -83,9 +152,23 @@ save_default_route() {
 
 restore_default_route() {
     [[ -s "$ROUTE_BACKUP" ]] || return 0
-    local spec
+    local spec dev
     spec="$(cat "$ROUTE_BACKUP")"
     [[ -n "$spec" ]] || return 0
+    # The journal lives in a user-writable directory, so never feed root an
+    # arbitrary route specification: accept only the shape produced by
+    # `ip route show default` and require the referenced device to exist.
+    if [[ ! "$spec" =~ ^default\ via\ [0-9a-fA-F.:]+\ dev\ [A-Za-z0-9_.-]+(\ .*)?$ ]]; then
+        echo -e "${YELLOW}⚠ ignoring malformed route journal${NC}" >&2
+        rm -f "$ROUTE_BACKUP"
+        return 0
+    fi
+    dev="$(printf '%s\n' "$spec" | sed -E 's/.* dev ([A-Za-z0-9_.-]+).*/\1/')"
+    if ! ip link show "$dev" >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ route journal references missing device $dev; dropping it${NC}" >&2
+        rm -f "$ROUTE_BACKUP"
+        return 0
+    fi
     # shellcheck disable=SC2086
     ip route replace $spec 2>/dev/null || true
     rm -f "$ROUTE_BACKUP"
@@ -253,7 +336,16 @@ require_root() {
         [[ -n "$TIMEOUT" ]] && root_args+=(--timeout "$TIMEOUT")
         root_args+=(--retry "$RETRY")
         root_args+=("$@")
-        export USER_AUTH PASSWORD URNETWORK_CONFIG_DIR="$CONFIG_DIR"
+
+        # Credentials travel in a 0600 file under the config dir rather than the
+        # environment: sudo env_keep for USER_AUTH/PASSWORD was equivalent to a
+        # write/delete-as-root primitive for any process running as the user.
+        # The root copy verifies the owner and removes the file immediately.
+        if [[ -n "${USER_AUTH:-}" ]]; then
+            local creds_file="$CONFIG_DIR/.creds.$$"
+            ( umask 077; printf 'USER_AUTH=%s\nPASSWORD=%s\n' "$USER_AUTH" "${PASSWORD:-}" > "$creds_file" )
+            root_args+=(--creds-file "$creds_file")
+        fi
 
         # When started from the GUI there is no TTY, so sudo cannot read a
         # password from stdin.  The GUI exports SUDO_ASKPASS, whose helper
@@ -316,8 +408,15 @@ load_credentials() {
 }
 
 is_running() {
-    [[ -f "$PID_FILE_SOCKS" ]] && kill -0 "$(cat "$PID_FILE_SOCKS")" 2>/dev/null && return 0
-    [[ -f "$PID_FILE_VPN" ]] && kill -0 "$(cat "$PID_FILE_VPN")" 2>/dev/null && return 0
+    local pid
+    if [[ -f "$PID_FILE_SOCKS" ]]; then
+        pid="$(cat "$PID_FILE_SOCKS")"
+        pid_is_expected "$pid" "socksproxy" && return 0
+    fi
+    if [[ -f "$PID_FILE_VPN" ]]; then
+        pid="$(cat "$PID_FILE_VPN")"
+        pid_is_expected "$pid" "urnetwork-vpn" && return 0
+    fi
     return 1
 }
 
@@ -375,19 +474,28 @@ case "${1:-help}" in
         require_root "$@"
         echo -e "${YELLOW}⏹  Stopping...${NC}"
         if [[ -f "$PID_FILE_SOCKS" ]]; then
-            kill "$(cat "$PID_FILE_SOCKS")" 2>/dev/null || true
+            socks_pid="$(cat "$PID_FILE_SOCKS")"
+            if pid_is_expected "$socks_pid" "socksproxy"; then
+                kill "$socks_pid" 2>/dev/null || true
+            else
+                echo -e "${YELLOW}⚠ pid $socks_pid from socks.pid is not socksproxy; not killing${NC}" >&2
+            fi
         fi
         if [[ -f "$PID_FILE_VPN" ]]; then
             vpn_pid="$(cat "$PID_FILE_VPN")"
-            kill "$vpn_pid" 2>/dev/null || true
-            for _ in 1 2 3 4 5 6 7 8 9 10; do
-                kill -0 "$vpn_pid" 2>/dev/null || break
-                sleep 0.3
-            done
-            kill -9 "$vpn_pid" 2>/dev/null || true
+            if pid_is_expected "$vpn_pid" "urnetwork-vpn"; then
+                kill "$vpn_pid" 2>/dev/null || true
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    pid_alive "$vpn_pid" || break
+                    sleep 0.3
+                done
+                kill -9 "$vpn_pid" 2>/dev/null || true
+            else
+                echo -e "${YELLOW}⚠ pid $vpn_pid from vpn.pid is not urnetwork-vpn; not killing${NC}" >&2
+            fi
         fi
-        pkill -f "build/socksproxy" 2>/dev/null || true
-        pkill -f "build/urnetwork-vpn" 2>/dev/null || true
+        kill_engines_by_exe socksproxy
+        kill_engines_by_exe urnetwork-vpn
         ip link delete urnetwork 2>/dev/null || true
         remove_ipv6_blackhole
         restore_default_route
@@ -424,6 +532,10 @@ case "${1:-help}" in
         ;;
 
     register)
+        if [[ $EUID -eq 0 ]]; then
+            echo -e "${RED}register must run as your normal user, not root${NC}" >&2
+            exit 1
+        fi
         if [[ $# -lt 3 ]]; then
             echo "Usage: $(basename "$0") register <email> <password>"
             exit 1
@@ -439,9 +551,11 @@ case "${1:-help}" in
             PBIN="$BUILD_DIR/urnetwork-provider"
         else
             echo -e "${YELLOW}Downloading provider binary...${NC}"
-            local tmpdir
+            # No `local` here: this branch runs at script scope, where `local`
+            # aborts the whole script under `set -e`.  Keep the global cleanup
+            # trap too instead of replacing it.
             tmpdir="$(mktemp -d)"
-            trap 'rm -rf "$tmpdir"' EXIT
+            trap 'rm -rf "$tmpdir"; cleanup_bg' EXIT
             curl -fsSL "https://github.com/urnetwork/connect/releases/download/v2026.3.23-895075980/urnetwork-provider-2026.3.23-895075980.tar.gz" \
                 -o "$tmpdir/provider.tar.gz"
             # `tar A || tar B && cp` used to run `cp` even after a successful
@@ -506,8 +620,9 @@ case "${1:-help}" in
     list-locations)
         load_credentials
         echo -e "${CYAN}Available locations:${NC}"
+        # Let the engine's exit code reach the caller instead of hiding it.
         USER_AUTH="$USER_AUTH" PASSWORD="$PASSWORD" \
-            "$BUILD_DIR/socksproxy" list-locations 2>&1 || true
+            "$BUILD_DIR/socksproxy" list-locations 2>&1
         ;;
 
     status)
@@ -518,12 +633,12 @@ case "${1:-help}" in
         else
             echo -e "  ${YELLOW}✗${NC} No credentials"
         fi
-        if [[ -f "$PID_FILE_SOCKS" ]] && kill -0 "$(cat "$PID_FILE_SOCKS")" 2>/dev/null; then
+        if [[ -f "$PID_FILE_SOCKS" ]] && pid_is_expected "$(cat "$PID_FILE_SOCKS")" "socksproxy"; then
             echo -e "  ${GREEN}✓${NC} SOCKS5 proxy :9999 (pid $(cat "$PID_FILE_SOCKS"))"
         else
             echo -e "  ${YELLOW}✗${NC} SOCKS5 proxy"
         fi
-        if [[ -f "$PID_FILE_VPN" ]] && kill -0 "$(cat "$PID_FILE_VPN")" 2>/dev/null; then
+        if [[ -f "$PID_FILE_VPN" ]] && pid_is_expected "$(cat "$PID_FILE_VPN")" "urnetwork-vpn"; then
             echo -e "  ${GREEN}✓${NC} TUN VPN (pid $(cat "$PID_FILE_VPN"))"
         else
             echo -e "  ${YELLOW}✗${NC} TUN VPN"

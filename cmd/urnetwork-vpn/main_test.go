@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,4 +268,84 @@ func TestWriteStateFileWritesJSONWithPrivatePerms(t *testing.T) {
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temporary state file was left behind")
 	}
+}
+
+func TestResolveStateFilePathIn(t *testing.T) {
+	trusted := filepath.Join(string(filepath.Separator), "home", "user", ".config", "urnetwork")
+
+	if got := resolveStateFilePathIn("", ""); got != "" {
+		t.Fatalf("no trusted dir must disable the state file, got %q", got)
+	}
+	if got, want := resolveStateFilePathIn("", trusted), filepath.Join(trusted, "state.json"); got != want {
+		t.Fatalf("default path = %q, want %q", got, want)
+	}
+	inside := filepath.Join(trusted, "custom.json")
+	if got := resolveStateFilePathIn(inside, trusted); got != inside {
+		t.Fatalf("path inside trusted dir was rejected: %q", got)
+	}
+	outside := filepath.Join(string(filepath.Separator), "etc", "sudoers.d", "evil.json")
+	if got := resolveStateFilePathIn(outside, trusted); got != "" {
+		t.Fatalf("path outside trusted dir was accepted: %q", got)
+	}
+	sibling := trusted + "-evil" + string(filepath.Separator) + "state.json"
+	if got := resolveStateFilePathIn(sibling, trusted); got != "" {
+		t.Fatalf("sibling directory sharing the prefix was accepted: %q", got)
+	}
+}
+
+func TestPacketSenderStopDropsQueued(t *testing.T) {
+	stats := &trafficStats{}
+	started := make(chan []byte, 8)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	sender := newPacketSender(1, 4, time.Second, stats, false, func(packet []byte, _ time.Duration) bool {
+		calls.Add(1)
+		started <- packet
+		<-release
+		return true
+	})
+
+	for _, name := range []string{"a", "b", "c", "d"} {
+		if !sender.Enqueue([]byte(name)) {
+			t.Fatalf("enqueue %q should succeed", name)
+		}
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start sending")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		sender.Stop()
+		close(stopped)
+	}()
+	// The in-flight send still blocks; only once it finishes may Stop complete.
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before the in-flight send finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after the in-flight send finished")
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("sendFn calls = %d, want 1 (queued packets must be dropped, not sent)", got)
+	}
+	if got := stats.txSent.Load(); got != 1 {
+		t.Fatalf("txSent = %d, want 1", got)
+	}
+	if got := stats.txDropped.Load(); got != 3 {
+		t.Fatalf("txDropped = %d, want 3", got)
+	}
+	if got := stats.txEnqueued.Load(); got != 4 {
+		t.Fatalf("txEnqueued = %d, want 4", got)
+	}
+	sender.Stop() // idempotent
 }

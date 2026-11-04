@@ -19,6 +19,9 @@ LOG_FILE = os.path.join(CONFIG_DIR, "diagnostic.log")
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 GUI_LOCK_FILE = os.path.join(CONFIG_DIR, "gui.lock")
 LOG_MAX_BYTES = 10 * 1024 * 1024
+# The log view is a widget, not a file: without a cap it grows for the whole
+# session (a stats line every 10 s is thousands of lines per day).
+LOG_BUFFER_MAX_CHARS = 400_000
 
 # The TUN engine needs root for the TUN device and routes, but the GUI is
 # started from a desktop entry without a TTY, so sudo cannot prompt by itself.
@@ -119,7 +122,6 @@ def sudo_env(base=None):
         # window, not on a terminal the user may not be looking at.
         env["URNETWORK_FORCE_ASKPASS"] = "1"
     return env
-BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build"))
 SCRIPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "urnetwork-connect.sh"))
 
 GLOG_RE = re.compile(r'^[IWEF]\d{4}\s')
@@ -480,9 +482,19 @@ class URnetworkGUI:
     def _append_log(self, msg):
         end = self.log_buffer.get_end_iter()
         self.log_buffer.insert(end, msg + "\n")
-        mark = self.log_buffer.create_mark(None, end, False)
+        self._trim_log()
+        mark = self.log_buffer.create_mark(None, self.log_buffer.get_end_iter(), False)
         self.log_view.scroll_to_mark(mark, 0, True, 0, 1)
         return False
+
+    def _trim_log(self):
+        """Drop the oldest output so a long session cannot grow unbounded."""
+        excess = self.log_buffer.get_char_count() - LOG_BUFFER_MAX_CHARS
+        if excess <= 0:
+            return
+        self.log_buffer.delete(
+            self.log_buffer.get_start_iter(),
+            self.log_buffer.get_iter_at_offset(excess))
 
     def _write_log_line(self, msg):
         if not self.log_fp:
@@ -518,6 +530,7 @@ class URnetworkGUI:
         del self._pending_log[:]
         end = self.log_buffer.get_end_iter()
         self.log_buffer.insert(end, chunk + "\n")
+        self._trim_log()
         mark = self.log_buffer.create_mark(None, self.log_buffer.get_end_iter(), False)
         self.log_view.scroll_to_mark(mark, 0, True, 0, 1)
         return False
@@ -759,16 +772,29 @@ class URnetworkGUI:
         except Exception as e:
             self._write_log_line("cleanup off error: {}".format(e))
 
+    def _flush_stdout_buffer(self):
+        """Emit a trailing partial line; otherwise the last output before an
+        engine crash is silently dropped (no trailing newline on a hard exit)."""
+        if not self._stdout_buf:
+            return
+        text = self._stdout_buf.decode("utf-8", "replace")
+        self._stdout_buf = b""
+        if text.strip():
+            self.handle_line(text)
+
     def _on_stdout_readable(self, fd, condition):
         if condition & GLib.IO_HUP:
+            self._flush_stdout_buffer()
             return False
         try:
             data = os.read(fd, 65536)
         except BlockingIOError:
             return True
         except OSError:
+            self._flush_stdout_buffer()
             return False
         if not data:
+            self._flush_stdout_buffer()
             return False
         self._stdout_buf += data
         while b"\n" in self._stdout_buf:

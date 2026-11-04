@@ -765,6 +765,43 @@ GUI хранит его в Secret Service (GNOME Keyring) через новый 
 ~14 МБ; `lintian` чист (единственное переопределение —
 `initial-upload-closes-no-bugs`).
 
+### 8.11 Исправления по ревью (после публикации v0.1.1)
+
+- **P1, `local` вне функции в `register`** (`scripts/urnetwork-connect.sh`):
+  ветка `register)` исполнялась на верхнем уровне скрипта, где `local`
+  невозможен — под `set -e` bash печатал ошибку и выходил с rc=1, то есть
+  регистрация на чистой машине не работала вообще. Строка удалена, а `trap`
+  ветки теперь дополняет глобальный `cleanup_bg`, а не заменяет его.
+- **P1, sudoers `env_keep`**: из правила убраны `USER_AUTH`, `PASSWORD`,
+  `URNETWORK_CONFIG_DIR`, `URNETWORK_STATE_FILE`; остался только
+  `URNETWORK_VERBOSE`. Учётные данные передаются root-копии launcher'а файлом
+  `$CONFIG_DIR/.creds.$$` (`umask 077`, владелец — `SUDO_UID`, удаляется после
+  чтения); `register` под root запрещён.
+- **P1, произвольная запись/удаление от root через `URNETWORK_STATE_FILE`**:
+  `resolveStateFilePath` (в `cmd/urnetwork-vpn/main.go`) при `EUID == 0`
+  строит доверенный каталог из `SUDO_UID` и принимает путь только внутри него;
+  по умолчанию используется `<home>/.config/urnetwork/state.json`.
+- **P2, `status`/`off` через `kill -0`**: `kill -0` возвращает `EPERM` для
+  root-процесса из пользовательской сессии, поэтому status показывал «✗ TUN
+  VPN» при работающем движке. Теперь живость проверяется по `/proc/<pid>`,
+  а перед сигналом сверяется `/proc/<pid>/exe`; широкий `pkill -f` заменён на
+  адресный `kill_engines_by_exe`.
+- **P2, `sender.Stop()` ждал всю очередь**: воркеры блокировались на каждом
+  оставшемся пакете (до 2048 × 15 с). Теперь `Stop` только просит воркеры
+  завершиться (`stop chan struct{}`, `atomic.Bool`), уже стоящие в очереди
+  пакеты отбрасываются и учитываются в `txDropped`.
+- **Мелочи**: GUI сбрасывает хвост stdout без `\n` при `IO_HUP`/EOF (последние
+  строки перед падением движка не теряются); `TextView` ограничен
+  `LOG_BUFFER_MAX_CHARS`; `--city` больше не подменяется `append`'ом к слайсу
+  флага; `list-locations` возвращает код движка; `restore_default_route`
+  валидирует журнал маршрута (маска + наличие `dev`).
+- **Тесты**: `tests/test_connect_script_static.py` (нет `local` вне функций,
+  `register` не содержит `local`, sudoers `env_keep` без секретов, проверка
+  pid по exe, валидация журнала маршрута), Go-тесты
+  `TestResolveStateFilePathIn` и `TestPacketSenderStopDropsQueued` (очередь не
+  досылается после Stop), GUI-тесты на сброс хвоста stdout и лимит буфера.
+  Итог: `make test` — go test ok, **44 passed** (pytest), `bash -n`/`py_compile`.
+
 ## 9. Что осталось (не входило в эту итерацию)
 
 1. **Производительность**: измерить 4 параллельных потока в стабильной сети;
@@ -782,6 +819,7 @@ GUI хранит его в Secret Service (GNOME Keyring) через новый 
    компактный формат (`go:embed` + бинарный поиск), net.IPNet/префиксы.
 5. **`--no-route`** теперь работает, но GUI его не выставляет; также нет
    индикатора egress IP/трафика в GUI (есть `state.json` — можно показать).
-6. Коммиты не делались: в репозитории остаются посторонние незакоммиченные
-   изменения (`cmd/urnetwork-vpn/go.mod`, `gui/urnetwork-vpn.desktop`,
-   `lib/proxy/go.sum`) и вложенные git-репозитории `lib/connect`, `lib/proxy`.
+6. Вложенные git-репозитории `lib/connect`, `lib/proxy` по-прежнему не
+   являются сабмодулями: их изменения попадают в коммиты основного репозитория
+   как обычные файлы. Если upstream подтягивается регулярно, стоит оформить
+   сабмодули или vendoring.
