@@ -7,9 +7,23 @@
 
 Везде ниже подставьте актуальный тег (сейчас `v0.1.1`).
 
+**Статус проверки правил (2026-11-04):** проверены первоисточниками — Show HN
+(`showhn.html`), `r/linux` (п.6 «Spamming self-promotion»), `r/privacy`
+(п.13 — VPN запрещён, поэтому канал исключён), `awesome-selfhosted`
+(`CONTRIBUTING.md`: первый релиз старше 4 месяцев). **Не проверены** из-за
+403/таймаута с этого хоста: `r/Ubuntu`, `r/selfhosted`, `r/VPN`,
+`r/linuxquestions`, Lobsters, Product Hunt — перед постом открыть правила
+вручную в браузере.
+
 ---
 
 ## 1. Show HN (Hacker News)
+
+Условия (правила `showhn.html`): только своё и работающее, установка без
+регистрации и почты, заголовок начинается с «Show HN», автор присутствует в
+обсуждении, просить голоса друзей нельзя, один дебют на проект. Перед постом
+проверить, что `.deb` скачивается без логина и `urnetwork-gui` запускается на
+чистой Ubuntu.
 
 **Title**
 ```
@@ -137,7 +151,13 @@ Repo: https://github.com/Blqd/urnetwork-client
 
 ---
 
-## 5. r/privacy
+## 5. r/privacy — НЕ ИСПОЛЬЗОВАТЬ
+
+Правило п.13 сабреддита `r/privacy` прямо запрещает обсуждение VPN, прокси и
+криптовалют (проверено по снапшоту правил от 2024-10-02). Пост про VPN-клиент
+там будет снят, а аккаунт — в бан. Текст ниже оставлен только как заготовка
+для площадок, где VPN обсуждать можно (например, комментарий в профильном
+треде, если правила это допускают):
 
 **Title**
 ```
@@ -148,8 +168,6 @@ A Linux VPN client that keeps the password in the keyring and root out of the us
 ```
 Sharing the threat model rather than the feature list, because that is the part
 I actually want reviewed.
-
-This is a URnetwork client for Ubuntu with a GTK3 GUI. Design choices:
 
 - The URnetwork password is stored in GNOME Keyring (Secret Service). The config
   file keeps only the account identifier and network name, 0600.
@@ -302,24 +320,34 @@ Full changelog: https://github.com/Blqd/urnetwork-client/blob/master/CHANGELOG.m
 
 ---
 
-## 11. awesome-selfhosted — строка и PR
+## 11. awesome-selfhosted — пока НЕ ПОДХОДИТ (и что вместо)
 
-Строка (раздел VPN, формат как у соседей — проверить порядок и правила
-`CONTRIBUTING.md` репозитория awesome-selfhosted):
+По `CONTRIBUTING.md` из `awesome-selfhosted/awesome-selfhosted-data` заявка
+требует, чтобы **первый релиз был старше 4 месяцев**, была активная поддержка,
+англоязычная документация и рабочие инструкции установки. Репозиторий создан
+2026-11-04, значит формально окно открывается не раньше ~2027-03. Кроме того,
+список — про self-hosted софт, а не про клиент к чужой P2P-сети, так что
+мейнтейнер может отказать и по этой причине. PR от LLM/ИИ запрещены —
+отправлять должен человек.
+
+Что делать сейчас: `awesome-linux-software` и тематические подборки
+«Linux VPN clients» (у каждой свои условия — читать `CONTRIBUTING.md`), а
+также профильные wiki-списки дистрибутивов. Формат строки ниже — заготовка на
+будущее:
 
 ```markdown
 - [urnetwork-client](https://github.com/Blqd/urnetwork-client) - P2P VPN client for Ubuntu with a native GTK3 GUI, SOCKS5 and TUN modes, single `.deb` package. ([Source Code](https://github.com/Blqd/urnetwork-client)) `MPL-2.0` `Python/Go`
 ```
 
-**PR description**
+**PR description (когда список станет доступен по сроку)**
 ```
 Adds urnetwork-client, a desktop client for the URnetwork P2P VPN network.
 
 - Open source: MPL-2.0
 - Platform: Ubuntu 22.04+ (Linux desktop), GUI + CLI
 - Install: single .deb from GitHub Releases (no Snap/Flatpak requirement)
-- Why it fits the list: the existing clients for this network are CLI-only, so
-  this is the first desktop GUI option; the .deb makes it a one-step install.
+- Why it fits: the existing clients for this network are CLI-only, so this is
+  the first desktop GUI option; the .deb makes it a one-step install.
 
 Checklist from CONTRIBUTING.md: entry is alphabetical in its section, links are
 to the source repository, license and language tags are present.
