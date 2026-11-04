@@ -165,7 +165,8 @@ The full analysis with numbers is in [`docs/analysis.md`](docs/analysis.md).
   a single GUI instance (flock); system-proxy buttons are active only in
   SOCKS mode.
 - **Scripts** (`scripts/urnetwork-connect.sh`): `auth` is parsed instead of
-  `source`d; credentials only via env; `flock` prevents double starts; the
+  `source`d; credentials reach the engines only via env and the root copy via a
+  `0600` file (see below); `flock` prevents double starts; the
   engine is restarted after a crash (previously `wait $pid` under `set -e`
   killed the script before any retry); the route is restored and a stale TUN
   is removed; `register` downloads the binary via `mktemp` and unpacks it

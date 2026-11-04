@@ -4,6 +4,19 @@
 
 **[Русский](README.md) | [English](README.en.md)**
 
+<img src="docs/assets/screenshot.png" width="300" align="right" alt="GTK3 GUI: аккаунт, режим SOCKS5/TUN, выбор локации и кнопка Start">
+
+**P2P-VPN для Ubuntu с родным GTK3-интерфейсом.** Ввёл аккаунт URnetwork —
+нажал Start. Пароль лежит в GNOME Keyring, режим SOCKS5 работает без root,
+TUN забирает системный маршрут и закрывает утечку IPv6.
+
+- **Один `.deb`** — без Snap, Flatpak и AppImage: `urnetwork-gui`,
+  `urnetwork-connect status|socks|vpn|off` и пункт меню ставятся вместе.
+- **Без Electron-обёрток**: GUI на Python + GTK3, сетевой стек — Go,
+  собранный из исходников (`lib/connect`, `lib/sdk`, `lib/proxy`).
+- **Прозрачные привилегии**: root нужен только для TUN, правила sudoers
+  пакет не добавляет (опционально — `scripts/install-nopasswd.sh`).
+
 Клиент P2P-VPN на базе URnetwork: Go-стек (`lib/connect`, `lib/sdk`, `lib/proxy`),
 CLI/демоны и GTK3-GUI на Python.
 
@@ -20,7 +33,19 @@ CLI/демоны и GTK3-GUI на Python.
 | SOCKS5 (без root) | `build/socksproxy` | Приложение/система идёт через `127.0.0.1:9999` |
 | TUN (нужен root) | `build/urnetwork-vpn` | Default route уводится в устройство `urnetwork` |
 
-## Быстрый старт
+## Установка из релиза (Ubuntu 22.04+)
+
+```bash
+gh release download -R Blqd/urnetwork-client --pattern '*.deb'
+sudo dpkg -i urnetwork-client_*.deb
+sudo apt-get -f install   # доустановить зависимости, если dpkg попросит
+urnetwork-gui
+```
+
+Без `gh` — скачайте `.deb` со [страницы релизов](https://github.com/Blqd/urnetwork-client/releases/latest)
+и поставьте тем же `dpkg -i`.
+
+## Сборка из исходников
 
 ```bash
 git clone https://github.com/Blqd/urnetwork-client.git
@@ -182,7 +207,8 @@ sudo apt-get -f install   # доустановить зависимости, е�
   один экземпляр GUI (flock); кнопки системного прокси активны только в
   SOCKS-режиме.
 - **Скрипты** (`scripts/urnetwork-connect.sh`): `auth` парсится, а не
-  `source`-ится; kredы только через env; `flock` от двойного запуска; рестарт
+  `source`-ится; kredы для движков — только через env, а root-копии — файлом
+  `0600` (после ревью, см. ниже); `flock` от двойного запуска; рестарт
   при падении (раньше `wait $pid` под `set -e` убивал скрипт до retry);
   восстановление маршрута и удаление stale TUN; `register` качает бинарник через
   `mktemp` и раскладывает без старого бага `tar A || tar B && cp`.

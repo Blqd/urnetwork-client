@@ -627,7 +627,9 @@ curl --socks5-hostname 127.0.0.1:9999 https://api.ipify.org
 
 `scripts/urnetwork-connect.sh`:
 - креды только через окружение (`env USER_AUTH=… PASSWORD=…`) — в `ps` не видны;
-  `auth` парсится, а не `source`-ится (файл — данные, не код);
+  `auth` парсится, а не `source`-ится (файл — данные, не код). После §8.11
+  launcher передаёт креды root-копии файлом `$CONFIG_DIR/.creds.$$` (`0600`),
+  потому что `env_keep` для них убран;
 - `flock` от двойного запуска (`Another urnetwork-connect instance is already running`);
 - `run_with_retry` больше не выходит из `set -e` на `wait $pid`: падения реально
   перезапускаются (до `--retry`), коды 143/130 считаются штатной остановкой;
