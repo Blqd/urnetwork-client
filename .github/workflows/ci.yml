@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Go toolchain
+        run: go version
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l \
+            cmd/urnetwork-vpn \
+            lib/proxy/socks \
+            lib/proxy/tun.go \
+            lib/connect/ip.go \
+            lib/connect/jwt.go \
+            lib/connect/net_tls.go)"
+          if [ -n "$out" ]; then
+            echo "not gofmt'd:"; echo "$out"; exit 1
+          fi
+
+      - name: Build client binaries
+        run: make build
+
+      - name: Go tests (client module)
+        working-directory: cmd/urnetwork-vpn
+        run: go test -timeout 120s ./...
+
+      - name: Shell syntax
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+
+      - name: GUI tests
+        run: python3 -m pytest tests -q

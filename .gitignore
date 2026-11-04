@@ -2,3 +2,6 @@ build/
 *.tar.gz
 go.work
 go.work.sum
+__pycache__/
+.pytest_cache/
+*.pyc

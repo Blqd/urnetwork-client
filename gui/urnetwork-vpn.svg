@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#2c3268"/>
+      <stop offset="0.55" stop-color="#1b1e3f"/>
+      <stop offset="1" stop-color="#101226"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#5cffc4"/>
+      <stop offset="0.5" stop-color="#18e39a"/>
+      <stop offset="1" stop-color="#00ab74"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="248" height="248" rx="58" fill="url(#bg)"/>
+  <rect x="4" y="4" width="248" height="248" rx="58" fill="none" stroke="#3d4681" stroke-width="2" stroke-opacity="0.65"/>
+  <path d="M128 36 L197 63.5 V129 C197 171 167.5 203.5 128 221 C88.5 203.5 59 171 59 129 V63.5 Z" fill="url(#shield)"/>
+  <path d="M128 36 L197 63.5 V129 C197 171 167.5 203.5 128 221 C88.5 203.5 59 171 59 129 V63.5 Z" fill="none" stroke="#0c2a22" stroke-opacity="0.35" stroke-width="2"/>
+  <circle cx="128" cy="112" r="23" fill="#0c1224"/>
+  <path d="M116.5 121 h23 v35 a11.5 11.5 0 0 1 -23 0 z" fill="#0c1224"/>
+</svg>

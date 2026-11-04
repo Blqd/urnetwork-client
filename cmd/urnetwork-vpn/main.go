@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -27,6 +29,11 @@ import (
 )
 
 var Version string
+
+const (
+	statsInterval = 10 * time.Second
+	sendTimeout   = 15 * time.Second
+)
 
 func init() {
 	initGlog()
@@ -119,6 +126,12 @@ func main() {
 		tunAddr     string
 		noRoute     bool
 		bypass      cli.StringSlice
+		verbose     bool
+		sendWorkers int
+		sendQueue   int
+		replaceTun  bool
+		blockIPv6   bool
+		stateFile   string
 	}{}
 	app := &cli.App{
 		Flags: []cli.Flag{
@@ -169,6 +182,30 @@ func main() {
 				Name: "bypass", Usage: "Additional IPs/CIDRs to bypass TUN (can specify multiple)",
 				Destination: &cfg.bypass,
 			},
+			&cli.BoolFlag{
+				Name: "verbose", Usage: "Log every packet (slow; for troubleshooting only)",
+				EnvVars: []string{"URNETWORK_VERBOSE"}, Destination: &cfg.verbose,
+			},
+			&cli.IntFlag{
+				Name: "send-workers", Usage: "Number of concurrent packet senders",
+				Value: 1, Destination: &cfg.sendWorkers,
+			},
+			&cli.IntFlag{
+				Name: "send-queue", Usage: "Max packets buffered between TUN and the network",
+				Value: 2048, Destination: &cfg.sendQueue,
+			},
+			&cli.BoolFlag{
+				Name: "replace-tun", Usage: "Delete an existing TUN interface with the same name",
+				Destination: &cfg.replaceTun,
+			},
+			&cli.BoolFlag{
+				Name: "block-ipv6", Usage: "Block IPv6 while connected to prevent leaks",
+				Value: true, Destination: &cfg.blockIPv6,
+			},
+			&cli.StringFlag{
+				Name: "state-file", Usage: "Write connection state as JSON to this path",
+				EnvVars: []string{"URNETWORK_STATE_FILE"}, Destination: &cfg.stateFile,
+			},
 		},
 		Name: "urnetwork-vpn",
 		Commands: []*cli.Command{
@@ -204,7 +241,12 @@ func main() {
 			},
 		},
 		Action: func(c *cli.Context) error {
-			ctx := c.Context
+			ctx, cancel := context.WithCancel(c.Context)
+			defer cancel()
+
+			if err := validateMtu(cfg.mtu); err != nil {
+				return err
+			}
 
 			jwt, err := login(ctx, cfg.apiURL, cfg.userAuth, cfg.password)
 			if err != nil {
@@ -216,7 +258,7 @@ func main() {
 				return fmt.Errorf("get locations failed: %w", err)
 			}
 
-			providersSpec, err := getProviderSpec(locations, cfg.city, cfg.country, cfg.region, cfg.providerID)
+			providersSpec, providerName, err := getProviderSpec(locations, cfg.city, cfg.country, cfg.region, cfg.providerID)
 			if err != nil {
 				return fmt.Errorf("get provider spec failed: %w", err)
 			}
@@ -257,111 +299,366 @@ func main() {
 				return fmt.Errorf("parse tun-addr failed: %w", err)
 			}
 
-			tun, err := createTun(cfg.tunName, tunPrefix, cfg.mtu)
+			tun, err := createTun(cfg.tunName, tunPrefix, cfg.mtu, cfg.replaceTun)
 			if err != nil {
 				return fmt.Errorf("create tun failed: %w", err)
 			}
 			defer tun.CloseTun()
 
+			stats := &trafficStats{}
+			var addedBypasses []string
+			ipv6Blocked := false
 			if !cfg.noRoute {
-				bypassCIDRs := cfg.bypass.Value()
-				bypassCIDRs = append(bypassCIDRs, resolveBypassHosts(ctx)...)
-				addedBypasses, err := setupRouting(cfg.tunName, tunPrefix, bypassCIDRs)
-				if err != nil {
+				bypassCIDRs := append(cfg.bypass.Value(), resolveBypassHosts(ctx)...)
+				var setupErr error
+				addedBypasses, setupErr = setupRouting(cfg.tunName, tunPrefix, bypassCIDRs, cfg.mtu, cfg.blockIPv6)
+				if setupErr != nil {
+					// undo whatever the setup managed to configure before failing
+					teardownRouting(cfg.tunName, tunPrefix, addedBypasses, ipv6Blocked)
 					tun.CloseTun()
-					return fmt.Errorf("setup routing failed: %w", err)
+					return fmt.Errorf("setup routing failed: %w", setupErr)
 				}
-				defer teardownRouting(cfg.tunName, tunPrefix, addedBypasses)
+				ipv6Blocked = cfg.blockIPv6
+				defer teardownRouting(cfg.tunName, tunPrefix, addedBypasses, ipv6Blocked)
 			}
 
 			source := connect.SourceId(clientID)
+			startedAt := time.Now()
+
+			receiveCallback := func(source connect.TransferPath, provideMode protocol.ProvideMode, ipPath *connect.IpPath, packet []byte) {
+				if len(packet) == 0 {
+					return
+				}
+				if cfg.verbose {
+					fmt.Printf("[<<TUN] %s\n", describePacket(packet))
+				}
+				if _, err := tun.Write(packet); err != nil {
+					stats.rxWriteErr.Add(1)
+					fmt.Fprintln(os.Stderr, "tun write error:", err)
+					return
+				}
+				stats.rxPackets.Add(1)
+				stats.rxBytes.Add(uint64(len(packet)))
+			}
 
 			mc := connect.NewRemoteUserNatMultiClient(
 				ctx,
 				generator,
-				func(source connect.TransferPath, provideMode protocol.ProvideMode, ipPath *connect.IpPath, packet []byte) {
-					if len(packet) > 0 {
-						srcIP := ""
-						dstIP := ""
-						proto := ""
-						version := packet[0] >> 4
-						if version == 4 && len(packet) >= 20 {
-							srcIP = net.IP(packet[12:16]).String()
-							dstIP = net.IP(packet[16:20]).String()
-							switch packet[9] {
-							case 6:
-								proto = "TCP"
-							case 17:
-								proto = "UDP"
-							case 1:
-								proto = "ICMP"
-							default:
-								proto = fmt.Sprintf("PROTO%d", packet[9])
-							}
-						}
-						fmt.Printf("[<<TUN] %s %s->%s (%d bytes)\n", proto, srcIP, dstIP, len(packet))
-					}
-					_, err := tun.Write(packet)
-					if err != nil {
-						fmt.Fprintln(os.Stderr, "tun write error:", err)
-					}
-				},
+				receiveCallback,
 				protocol.ProvideMode_Network,
 				vpnMultiClientSettings(),
 			)
 
+			sender := newPacketSender(cfg.sendWorkers, cfg.sendQueue, sendTimeout, stats, cfg.verbose, func(packet []byte, timeout time.Duration) bool {
+				return mc.SendPacket(source, protocol.ProvideMode_Network, packet, timeout)
+			})
+			defer sender.Stop()
+
+			newState := func() stateFile {
+				return stateFile{
+					Version:       1,
+					Mode:          "vpn",
+					Pid:           os.Getpid(),
+					Connected:     true,
+					Provider:      providerName,
+					TunName:       cfg.tunName,
+					TunAddr:       tunPrefix.String(),
+					Mtu:           cfg.mtu,
+					IPv6Blocked:   ipv6Blocked,
+					StartedAt:     startedAt,
+					TxPackets:     stats.txPackets.Load(),
+					TxBytes:       stats.txBytes.Load(),
+					TxDropped:     stats.txDropped.Load(),
+					TxFailed:      stats.txFailed.Load(),
+					RxPackets:     stats.rxPackets.Load(),
+					RxBytes:       stats.rxBytes.Load(),
+					RxWriteErrors: stats.rxWriteErr.Load(),
+				}
+			}
+			stateWarned := false
+			writeState := func() {
+				if cfg.stateFile == "" {
+					return
+				}
+				if err := writeStateFile(cfg.stateFile, newState()); err != nil && !stateWarned {
+					stateWarned = true
+					fmt.Fprintf(os.Stderr, "warning: write state file %s: %v\n", cfg.stateFile, err)
+				}
+			}
+			writeState()
+			defer func() {
+				if cfg.stateFile != "" {
+					os.Remove(cfg.stateFile)
+				}
+			}()
+
+			readErr := make(chan error, 1)
 			go func() {
+				// one reusable read buffer; Read returns a packet-sized copy
+				buf := make([]byte, cfg.mtu+64)
 				for {
-					packet, err := tun.Read()
+					packet, err := tun.Read(buf)
 					if err != nil {
-						fmt.Fprintln(os.Stderr, "tun read error:", err)
-						return
-					}
-					if len(packet) > 0 {
-						srcIP := ""
-						dstIP := ""
-						proto := ""
-						version := packet[0] >> 4
-						if version == 4 && len(packet) >= 20 {
-							srcIP = net.IP(packet[12:16]).String()
-							dstIP = net.IP(packet[16:20]).String()
-							switch packet[9] {
-							case 6:
-								proto = "TCP"
-							case 17:
-								proto = "UDP"
-							case 1:
-								proto = "ICMP"
+						if ctx.Err() == nil {
+							select {
+							case readErr <- err:
 							default:
-								proto = fmt.Sprintf("PROTO%d", packet[9])
 							}
 						}
-						fmt.Printf("[TUN>>] %s %s->%s (%d bytes)\n", proto, srcIP, dstIP, len(packet))
+						return
 					}
-					ok := mc.SendPacket(
-						source,
-						protocol.ProvideMode_Network,
-						packet,
-						time.Second*15,
-					)
-					if !ok {
-						fmt.Fprintln(os.Stderr, sendPacketFailureDiagnostic(packet))
+					if len(packet) == 0 {
+						continue
+					}
+					stats.txPackets.Add(1)
+					stats.txBytes.Add(uint64(len(packet)))
+					if cfg.verbose {
+						fmt.Printf("[TUN>>] %s\n", describePacket(packet))
+					}
+					// Enqueue never blocks; it accounts a dropped packet itself.
+					sender.Enqueue(packet)
+				}
+			}()
+
+			go func() {
+				ticker := time.NewTicker(statsInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						fmt.Println(stats.line(sender.queueLen(), cfg.sendQueue))
+						writeState()
+					case <-ctx.Done():
+						return
 					}
 				}
 			}()
 
 			fmt.Printf("VPN connected. TUN: %s, IP: %s\n", cfg.tunName, tunPrefix)
+			if ipv6Blocked {
+				fmt.Println("IPv6 traffic is blocked while connected (disable with --block-ipv6=false).")
+			}
 			fmt.Println("Press Ctrl+C to disconnect.")
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
+			select {
+			case <-sigCh:
+			case err := <-readErr:
+				fmt.Fprintln(os.Stderr, "tun read error:", err)
+			}
 
 			fmt.Println("\nDisconnecting...")
+			cancel()
+			sender.Stop()
 			return nil
 		},
 	}
 	app.RunAndExitOnError()
+}
+
+// validateMtu rejects values that would silently truncate packets: the TUN read
+// buffer is derived from the configured MTU, and the interface MTU is set from it.
+func validateMtu(mtu int) error {
+	if mtu < 576 || mtu > 9000 {
+		return fmt.Errorf("invalid mtu %d: must be between 576 and 9000", mtu)
+	}
+	return nil
+}
+
+// describePacket formats a short one-line summary of an IP packet.
+func describePacket(packet []byte) string {
+	version := packet[0] >> 4
+	switch version {
+	case 4:
+		if len(packet) < 20 {
+			return fmt.Sprintf("IPv4 truncated len=%d", len(packet))
+		}
+		headerLen := int(packet[0]&0x0f) * 4
+		src := net.IP(packet[12:16]).String()
+		dst := net.IP(packet[16:20]).String()
+		proto := fmt.Sprintf("PROTO%d", packet[9])
+		switch packet[9] {
+		case 6:
+			proto = "TCP"
+		case 17:
+			proto = "UDP"
+		case 1:
+			proto = "ICMP"
+		}
+		if (packet[9] == 6 || packet[9] == 17) && headerLen >= 20 && len(packet) >= headerLen+4 {
+			srcPort := binary.BigEndian.Uint16(packet[headerLen : headerLen+2])
+			dstPort := binary.BigEndian.Uint16(packet[headerLen+2 : headerLen+4])
+			return fmt.Sprintf("%s %s:%d->%s:%d (%d bytes)", proto, src, srcPort, dst, dstPort, len(packet))
+		}
+		return fmt.Sprintf("%s %s->%s (%d bytes)", proto, src, dst, len(packet))
+	case 6:
+		return fmt.Sprintf("IPv6 len=%d", len(packet))
+	default:
+		return fmt.Sprintf("ip_version=%d len=%d", version, len(packet))
+	}
+}
+
+func humanBytes(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// trafficStats holds counters shared between the TUN reader, the packet sender
+// and the receive callback. All fields are updated with atomics so the stats
+// ticker can read them without blocking the data path.
+type trafficStats struct {
+	txPackets  atomic.Uint64
+	txBytes    atomic.Uint64
+	txEnqueued atomic.Uint64
+	txDropped  atomic.Uint64
+	txSent     atomic.Uint64
+	txFailed   atomic.Uint64
+	rxPackets  atomic.Uint64
+	rxBytes    atomic.Uint64
+	rxWriteErr atomic.Uint64
+}
+
+func (s *trafficStats) line(queueLen, queueCap int) string {
+	return fmt.Sprintf(
+		"stats: tx %d pkt/%s rx %d pkt/%s dropped=%d sendFailed=%d writeErrors=%d queue=%d/%d",
+		s.txPackets.Load(), humanBytes(s.txBytes.Load()),
+		s.rxPackets.Load(), humanBytes(s.rxBytes.Load()),
+		s.txDropped.Load(), s.txFailed.Load(), s.rxWriteErr.Load(),
+		queueLen, queueCap,
+	)
+}
+
+// packetSender decouples the TUN read loop from SendPacket: the reader never
+// blocks on the network. Packets are sent by worker goroutines from a bounded
+// queue; when the queue is full packets are dropped instead of stalling TUN.
+type packetSender struct {
+	sendFn  func(packet []byte, timeout time.Duration) bool
+	timeout time.Duration
+	queue   chan []byte
+	stats   *trafficStats
+	verbose bool
+
+	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
+}
+
+func newPacketSender(workers, queueSize int, timeout time.Duration, stats *trafficStats, verbose bool, sendFn func([]byte, time.Duration) bool) *packetSender {
+	if workers < 1 {
+		workers = 1
+	}
+	if queueSize < 1 {
+		queueSize = 1
+	}
+	s := &packetSender{
+		sendFn:  sendFn,
+		timeout: timeout,
+		queue:   make(chan []byte, queueSize),
+		stats:   stats,
+		verbose: verbose,
+	}
+	s.wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer s.wg.Done()
+			for packet := range s.queue {
+				if s.sendFn(packet, s.timeout) {
+					s.stats.txSent.Add(1)
+					continue
+				}
+				s.stats.txFailed.Add(1)
+				if s.verbose {
+					fmt.Fprintln(os.Stderr, sendPacketFailureDiagnostic(packet))
+				}
+			}
+		}()
+	}
+	return s
+}
+
+// Enqueue never blocks. It returns false when the queue is full or closed, and
+// counts the packet as dropped so callers cannot forget the accounting.
+func (s *packetSender) Enqueue(packet []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		s.stats.txDropped.Add(1)
+		return false
+	}
+	select {
+	case s.queue <- packet:
+		s.stats.txEnqueued.Add(1)
+		return true
+	default:
+		s.stats.txDropped.Add(1)
+		return false
+	}
+}
+
+func (s *packetSender) queueLen() int {
+	return len(s.queue)
+}
+
+// Stop closes the queue and waits for in-flight sends to finish. It is safe to
+// call more than once.
+func (s *packetSender) Stop() {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
+	close(s.queue)
+	s.mu.Unlock()
+	s.wg.Wait()
+}
+
+// stateFile is the JSON contract consumed by the GUI and scripts. It replaces
+// scraping stdout for connection status.
+type stateFile struct {
+	Version       int       `json:"version"`
+	Mode          string    `json:"mode"`
+	Pid           int       `json:"pid"`
+	Connected     bool      `json:"connected"`
+	Provider      string    `json:"provider,omitempty"`
+	TunName       string    `json:"tun_name,omitempty"`
+	TunAddr       string    `json:"tun_addr,omitempty"`
+	Mtu           int       `json:"mtu"`
+	IPv6Blocked   bool      `json:"ipv6_blocked"`
+	StartedAt     time.Time `json:"started_at"`
+	TxPackets     uint64    `json:"tx_packets"`
+	TxBytes       uint64    `json:"tx_bytes"`
+	TxDropped     uint64    `json:"tx_dropped"`
+	TxFailed      uint64    `json:"tx_failed"`
+	RxPackets     uint64    `json:"rx_packets"`
+	RxBytes       uint64    `json:"rx_bytes"`
+	RxWriteErrors uint64    `json:"rx_write_errors"`
+}
+
+func writeStateFile(path string, st stateFile) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func sendPacketFailureDiagnostic(packet []byte) string {
@@ -446,20 +743,22 @@ func getProviderLocations(ctx context.Context, apiURL string, jwt string) (*Find
 	)
 }
 
-func getProviderSpec(locations *FindLocationsResult, city, country, region, providerID string) ([]*connect.ProviderSpec, error) {
+// getProviderSpec resolves the requested location to a provider spec. It also
+// returns a human-readable description of the selection for logs and state.
+func getProviderSpec(locations *FindLocationsResult, city, country, region, providerID string) ([]*connect.ProviderSpec, string, error) {
 	if providerID != "" {
 		cid, err := connect.ParseId(providerID)
 		if err != nil {
-			return nil, fmt.Errorf("parse provider id failed: %w", err)
+			return nil, "", fmt.Errorf("parse provider id failed: %w", err)
 		}
 		fmt.Println("provider match", cid)
-		return []*connect.ProviderSpec{{ClientId: &cid}}, nil
+		return []*connect.ProviderSpec{{ClientId: &cid}}, "provider " + cid.String(), nil
 	}
 	if city != "" {
 		for _, v := range locations.Locations.Values() {
 			if v.LocationType == "city" && strings.EqualFold(v.Name, city) {
 				fmt.Printf("city matched %q, provider count %d\n", v.Name, v.ProviderCount)
-				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, nil
+				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, fmt.Sprintf("%s (city)", v.Name), nil
 			}
 		}
 	}
@@ -467,7 +766,7 @@ func getProviderSpec(locations *FindLocationsResult, city, country, region, prov
 		for _, v := range locations.Locations.Values() {
 			if v.LocationType == "country" && strings.EqualFold(v.Name, country) {
 				fmt.Printf("country matched %q, provider count %d\n", v.Name, v.ProviderCount)
-				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, nil
+				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, fmt.Sprintf("%s (country)", v.Name), nil
 			}
 		}
 	}
@@ -475,7 +774,7 @@ func getProviderSpec(locations *FindLocationsResult, city, country, region, prov
 		for _, v := range locations.Locations.Values() {
 			if v.LocationType == "region" && strings.EqualFold(v.Name, region) {
 				fmt.Printf("region matched %q, provider count %d\n", v.Name, v.ProviderCount)
-				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, nil
+				return []*connect.ProviderSpec{{LocationId: v.LocationId}}, fmt.Sprintf("%s (region)", v.Name), nil
 			}
 		}
 	}
@@ -484,10 +783,10 @@ func getProviderSpec(locations *FindLocationsResult, city, country, region, prov
 	})
 	if best != nil {
 		fmt.Printf("auto-selected %q (%s), provider count %d\n", best.Name, best.LocationType, best.ProviderCount)
-		return []*connect.ProviderSpec{{LocationId: best.LocationId}}, nil
+		return []*connect.ProviderSpec{{LocationId: best.LocationId}}, fmt.Sprintf("%s (%s)", best.Name, best.LocationType), nil
 	}
 
-	return nil, fmt.Errorf("no locations available")
+	return nil, "", fmt.Errorf("no locations available")
 }
 
 func authNetworkClient(ctx context.Context, apiURL, jwt string, req *connect.AuthNetworkClientArgs) (string, error) {
@@ -535,10 +834,21 @@ type systemTun struct {
 	closed bool
 }
 
-func createTun(name string, prefix netip.Prefix, mtu int) (*systemTun, error) {
-	// Delete existing TUN device to avoid stale flags
-	exec.Command("ip", "link", "delete", name).Run()
-	exec.Command("ip", "tuntap", "del", name, "mode", "tun").Run()
+func tunExists(name string) bool {
+	out, err := exec.Command("ip", "link", "show", name).CombinedOutput()
+	return err == nil && len(out) > 0
+}
+
+func createTun(name string, prefix netip.Prefix, mtu int, replace bool) (*systemTun, error) {
+	if tunExists(name) {
+		if !replace {
+			return nil, fmt.Errorf(
+				"interface %q already exists: another VPN instance is probably running; stop it first (urnetwork-connect.sh off) or pass --replace-tun",
+				name,
+			)
+		}
+		exec.Command("ip", "link", "delete", name).Run()
+	}
 
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -606,8 +916,10 @@ func prependTunPI(packet []byte) []byte {
 	return result
 }
 
-func (t *systemTun) Read() ([]byte, error) {
-	buf := make([]byte, t.mtu+64)
+// Read reads one packet from the TUN device into buf and returns a
+// packet-sized copy. Callers reuse buf across calls, so the returned slice must
+// not alias buf: it may be queued for asynchronous sending.
+func (t *systemTun) Read(buf []byte) ([]byte, error) {
 	for {
 		n, err := unix.Read(t.fd, buf)
 		if err != nil {
@@ -674,13 +986,27 @@ func runCmd(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) ([]string, error) {
+// runCmdQuiet runs a command without forwarding stderr. Teardown is expected to
+// race the kernel (the device may already be gone), so errors are not noise-worthy.
+func runCmdQuiet(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
+
+func ipv6BlackholeArgs() []string {
+	return []string{"-6", "route", "add", "blackhole", "default", "metric", "10"}
+}
+
+func ipv6BlackholeDelArgs() []string {
+	return []string{"-6", "route", "del", "blackhole", "default", "metric", "10"}
+}
+
+func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string, mtu int, blockIPv6 bool) (addedBypasses []string, err error) {
 	defaultGw, err := getDefaultGateway()
 	if err != nil {
 		return nil, fmt.Errorf("get default gateway: %w", err)
 	}
 
-	addedBypasses := selectBypassCIDRs(defaultGw, bypassCIDRs)
+	addedBypasses = selectBypassCIDRs(defaultGw, bypassCIDRs)
 
 	for _, cidr := range addedBypasses {
 		if err := runCmd("ip", "route", "replace", cidr, "via", defaultGw.String()); err != nil {
@@ -689,13 +1015,19 @@ func setupRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) ([]st
 	}
 
 	if err := runCmd("ip", "addr", "replace", prefix.String(), "dev", iface); err != nil {
-		return nil, fmt.Errorf("add addr: %w", err)
+		return addedBypasses, fmt.Errorf("add addr: %w", err)
 	}
-	if err := runCmd("ip", "link", "set", iface, "mtu", "1400", "up"); err != nil {
-		return nil, fmt.Errorf("link up: %w", err)
+	if err := runCmd("ip", "link", "set", iface, "mtu", fmt.Sprintf("%d", mtu), "up"); err != nil {
+		return addedBypasses, fmt.Errorf("link up: %w", err)
 	}
 	if err := runCmd("ip", defaultRouteArgs(iface, prefix)...); err != nil {
-		return nil, fmt.Errorf("add default route: %w", err)
+		return addedBypasses, fmt.Errorf("add default route: %w", err)
+	}
+
+	if blockIPv6 {
+		if err := runCmd("ip", ipv6BlackholeArgs()...); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not block IPv6, traffic may leak outside the tunnel: %v\n", err)
+		}
 	}
 
 	return addedBypasses, nil
@@ -723,13 +1055,19 @@ func selectBypassCIDRs(defaultGw netip.Addr, bypassCIDRs []string) []string {
 	return selected
 }
 
-func teardownRouting(iface string, prefix netip.Prefix, bypassCIDRs []string) {
-	runCmd("ip", "route", "del", "default", "dev", iface, "metric", "10")
-	for _, cidr := range lo.Uniq(bypassCIDRs) {
-		runCmd("ip", "route", "del", cidr)
+// teardownRouting reverses setupRouting. It is best effort and idempotent: the
+// interface or routes may already be gone (crash, manual cleanup, another
+// instance), which must not produce scary errors on a normal disconnect.
+func teardownRouting(iface string, prefix netip.Prefix, bypassCIDRs []string, blockIPv6 bool) {
+	if blockIPv6 {
+		runCmdQuiet("ip", ipv6BlackholeDelArgs()...)
 	}
-	runCmd("ip", "addr", "del", prefix.String(), "dev", iface)
-	runCmd("ip", "link", "set", iface, "down")
+	runCmdQuiet("ip", "route", "del", "default", "dev", iface, "metric", "10")
+	for _, cidr := range lo.Uniq(bypassCIDRs) {
+		runCmdQuiet("ip", "route", "del", cidr)
+	}
+	runCmdQuiet("ip", "addr", "del", prefix.String(), "dev", iface)
+	runCmdQuiet("ip", "link", "set", iface, "down")
 }
 
 func getDefaultGateway() (netip.Addr, error) {

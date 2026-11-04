@@ -1,9 +1,18 @@
 [Desktop Entry]
-Version=1.0
+Version=1.4
 Type=Application
 Name=URnetwork VPN
+GenericName=VPN Client
+GenericName[ru]=VPN-клиент
 Comment=Peer-to-peer VPN client
-Exec=/usr/bin/python3 /home/user/Документы/urnetwork-client/gui/urnetwork-gui.py
-Icon=network-vpn
+Comment[ru]=Одноранговый VPN-клиент URnetwork
+Exec=/home/user/Документы/urnetwork-client/scripts/urnetwork-gui-launch.sh
+TryExec=/home/user/Документы/urnetwork-client/scripts/urnetwork-gui-launch.sh
+Path=/home/user/Документы/urnetwork-client
+Icon=urnetwork-vpn
 Terminal=false
-Categories=Network;VPN;
+Categories=Network;
+Keywords=urnetwork;vpn;proxy;socks;tunnel;privacy;
+Keywords[ru]=urnetwork;vpn;прокси;socks;туннель;приватность;
+StartupNotify=true
+StartupWMClass=urnetwork-gui.py
