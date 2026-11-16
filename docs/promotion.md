@@ -72,7 +72,7 @@ upstream Go libraries».
 2. **About → Website**: поставить ссылку на страницу релизов
    (`https://github.com/Blqd/urnetwork-client/releases/latest`) — так посетитель
    попадает сразу к `.deb`, а не в дерево исходников.
-3. **Releases**: перевести тело `v0.1.1` на английский (или продублировать) —
+3. **Releases**: перевести тело `v0.1.2` на английский (или продублировать) —
    англоязычная аудитория читает release notes первой.
 
 Проверка после пуша: `gh api repos/Blqd/urnetwork-client/community/profile`
@@ -261,7 +261,7 @@ VPN (проверено). `r/Ubuntu`, `r/selfhosted`, `r/VPN`, `r/linuxquestions
 - `gh api repos/Blqd/urnetwork-client/traffic/views` — просмотры и уникальные
   посетители (14 дней истории);
 - `traffic/clones` и `traffic/popular/referrers` — откуда пришли;
-- скачивания ассетов релиза (`gh release view v0.1.1 --json assets`);
+- скачивания ассетов релиза (`gh release view v0.1.2 --json assets`);
 - звёзды/неделя и конверсия «просмотр страницы → звезда»;
 - issues/PR от незнакомых людей — главный признак, что аудитория настоящая.
 

@@ -45,7 +45,7 @@ body:
     attributes:
       label: Version
       description: Release tag or `urnetwork-connect status` / `git rev-parse --short HEAD`
-      placeholder: v0.1.1
+      placeholder: v0.1.2
     validations:
       required: true
   - type: input

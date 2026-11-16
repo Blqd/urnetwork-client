@@ -5,7 +5,7 @@
 «обход блокировок» и слов «VPN для доступа к заблокированным сайтам».
 Перед публикацией проверить фактическое состояние README и релизов.
 
-Везде ниже подставьте актуальный тег (сейчас `v0.1.1`).
+Везде ниже подставьте актуальный тег (сейчас `v0.1.2`).
 
 **Статус проверки правил (2026-11-04):** проверены первоисточниками — Show HN
 (`showhn.html`), `r/linux` (п.6 «Spamming self-promotion»), `r/privacy`
@@ -263,20 +263,22 @@ MPL-2.0. Инструкции и скриншоты: https://github.com/Blqd/urn
 
 **Заголовок**
 ```
-urnetwork-client 0.1.1 — open-source клиент URnetwork с GTK3 GUI для Ubuntu
+urnetwork-client 0.1.2 — open-source клиент URnetwork с GTK3 GUI для Ubuntu
 ```
 
 **Текст**
 ```
-Вышла версия 0.1.1 клиента URnetwork для Ubuntu: Go-стек (SOCKS5 и TUN),
+Вышла версия 0.1.2 клиента URnetwork для Ubuntu: Go-стек (SOCKS5 и TUN),
 GTK3-GUI на Python, установка из одного .deb, MPL-2.0.
 
-Изменения версии: <перечислить из CHANGELOG>.
-Пакет: urnetwork-client_0.1.1_amd64.deb + отдельные бинарники и SHA256SUMS.
+Изменения версии: подключение в один клик — GUI сам выбирает локацию с
+наибольшим числом провайдеров (пункт «Auto» в списках), плюс исправления
+привилегий и проверки живости процессов по итогам ревью.
+Пакет: urnetwork-client_0.1.2_amd64.deb + отдельные бинарники и SHA256SUMS.
 Требования: Ubuntu 22.04+, python3-gi, gir1.2-gtk-3.0, gir1.2-secret-1.
 
 Репозиторий: https://github.com/Blqd/urnetwork-client
-Релиз: https://github.com/Blqd/urnetwork-client/releases/tag/v0.1.1
+Релиз: https://github.com/Blqd/urnetwork-client/releases/tag/v0.1.2
 ```
 
 ---
