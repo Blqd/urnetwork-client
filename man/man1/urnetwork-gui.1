@@ -1,4 +1,4 @@
-.TH URNETWORK-GUI 1 "2026-11-04" "urnetwork-client 0.1.1" "User Commands"
+.TH URNETWORK-GUI 1 "2026-11-04" "urnetwork-client 0.1.2" "User Commands"
 .SH NAME
 urnetwork-gui \- GTK3 graphical front end for the URnetwork client
 .SH SYNOPSIS
@@ -16,6 +16,12 @@ that needs no privileges, and a system-wide TUN VPN that installs a default
 route through the tunnel.  The TUN mode requires root; the GUI launches the
 engine through a root-owned helper, and a sudo askpass helper opens its own
 terminal window when a password is needed.
+.PP
+The country and city lists start with
+.BR "Auto \(em best location" ;
+with no explicit choice the engine picks the exit location with the most
+providers.  The resolved location is shown next to the lists once the engine
+reports it.
 .SH FILES
 .TP
 .I ~/.config/urnetwork/auth

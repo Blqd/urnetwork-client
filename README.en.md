@@ -115,6 +115,15 @@ Removal: `sudo dpkg -r urnetwork-client` (configuration in
 Credentials can also be passed via the environment instead of the file:
 `USER_AUTH=... PASSWORD=... build/socksproxy`.
 
+## Choosing a location
+
+Nothing has to be chosen by default: both the country and the city list start
+with `🌐 Auto — best location`, and the engine then picks the location with the
+most providers (the CLI does the same without `--country`/`--city`). Once
+connected, the caption above the lists shows the location that was picked
+automatically. An explicit country or city is still forwarded to the engine as
+`--country`/`--city`.
+
 ## Security
 
 - The password never appears in `argv` of the GUI or the engines: it is passed
@@ -225,8 +234,8 @@ Full details in [`docs/analysis.md`](docs/analysis.md), §8.11.
   the flag slice any more.
 - **Tests**: `tests/test_connect_script_static.py` (static audit of the
   scripts), Go tests `TestResolveStateFilePathIn` and
-  `TestPacketSenderStopDropsQueued`, GUI tests for the stdout tail flush and the
-  buffer cap — 44 pytest tests in total.
+  `TestPacketSenderStopDropsQueued`, GUI tests for the stdout tail flush, the
+  buffer cap and the auto-location start (see above) — 53 pytest tests in total.
 
 ## Known limitations
 

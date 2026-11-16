@@ -133,7 +133,7 @@ socks5 server is listening on :9999
 * DoH-резолвер, ходящий **внутри** туннеля (`lib/proxy/tun.go:229-240`) — DNS не утекает в локальный резолвер в socks-режиме.
 * `IFF_NO_PI` и явная работа с `/dev/net/tun` — без лишних зависимостей.
 * Bypass-маршруты для control-хостов до включения default route, фильтрация family-mismatch (`main.go:708-724`) — видно, что проблемы уже отлаживали.
-* Есть тесты: `cmd/urnetwork-vpn/main_test.go` (6 тестов), 13 Python-тестов на десктоп-запись/иконку/статус GUI; они проходят. (Актуальные числа на 2026-11-04: 14 Go-тестов и 44 pytest-теста — §8.11.)
+* Есть тесты: `cmd/urnetwork-vpn/main_test.go` (6 тестов), 13 Python-тестов на десктоп-запись/иконку/статус GUI; они проходят. (Актуальные числа: 14 Go-тестов и 53 pytest-теста, см. §8.11.)
 * Launcher `.desktop` с диагностикой (лог, notify-send/zenity, коды выхода, выбор интерпретатора с `gi`) — грамотная обвязка для GTK-приложения.
 * `glog` с file-sink, `message_pool` с диагностикой — хорошая база для наблюдаемости.
 
@@ -454,7 +454,7 @@ if networkIdStr, ok := claims["network_id"]; ok { ... }
 4. **Кнопки прокси** — активны только в socks-режиме, сбрасываются при выходе; состояние прокси показывать явно.
 5. **Полезные метрики**: egress IP, текущий провайдер/локация, rx/tx, RTT до выхода (ICMP/ping через туннель), время сессии. Это же — ответ на частый вопрос «VPN работает?».
 6. **Single instance** (`flock` на `~/.config/urnetwork/gui.lock`), опционально трей (AppIndicator) и автозапуск.
-7. **Валидация**: не стартовать без локации (сейчас стартует и падает, `:411-413`), показывать текст ошибки от скрипта, а не только «failed to connect».
+7. **Валидация**: пустой выбор локации — не ошибка: движок сам берёт локацию с максимумом провайдеров, поэтому «Auto» должен быть явным пунктом списка, а не поводом не стартовать; показывать текст ошибки от скрипта, а не только «failed to connect».
 8. Убрать неиспользуемые `NETWORK_NAME`/`regions` или реализовать их.
 
 ### 5.6 Библиотека `lib/connect` (P2, ~1 неделя)
@@ -614,8 +614,12 @@ curl --socks5-hostname 127.0.0.1:9999 https://api.ipify.org
   TUN и default-маршрут не остаются «висеть».
 - один экземпляр GUI: `flock` на `gui.lock`; второй запуск печатает
   `URnetwork GUI is already running`.
-- кнопки системного прокси неактивны вне SOCKS-режима; старт без выбранной
-  локации запрещён с понятным сообщением.
+- кнопки системного прокси неактивны вне SOCKS-режима; в списках стран и
+  городов первым пунктом стоит `🌐 Auto — best location`, то есть старт без
+  выбора уходит в движок без `--country`/`--city`, и он сам берёт локацию с
+  наибольшим числом провайдеров (`getProviderSpec`); выбранную локацию
+  показывает подпись над списками (разбор строк `auto-selected` /
+  `city matched` из stdout).
 - `URNETWORK_STATE_FILE` / `URNETWORK_VERBOSE` прокидываются в движок.
 
 Тесты: `tests/test_gui_connection_status.py` (2) + новый
@@ -674,7 +678,7 @@ curl --socks5-hostname 127.0.0.1:9999 https://api.ipify.org
 
 ```text
 make build          # build/urnetwork-vpn, build/socksproxy — OK (Nov 4)
-make test           # go test ok; pytest 30 passed (позже 44, см. §8.11); bash -n всех скриптов ok
+make test           # go test ok; pytest 30 passed (позже 53, см. §8.11); bash -n всех скриптов ok
 gofmt -l …          # пусто
 urnetwork-vpn --help # новые флаги на месте; --mtu 100 → invalid mtu 100 …
 socksproxy          # ss: 127.0.0.1:9999; лог: listening on 127.0.0.1:9999
@@ -753,7 +757,7 @@ GUI хранит его в Secret Service (GNOME Keyring) через новый 
 Тесты: `tests/test_credentials_helper.py` (4, скипаются без Secret Service) и
 три новых теста в `tests/test_gui_hardening.py` (сохранение без `PASSWORD=`,
 загрузка из keyring, миграция из старого файла). Итого `pytest` → **30 passed**
-(после §8.11 — 44).
+(после §8.11 — 53).
 
 ### 8.10 Пакет `.deb`
 
@@ -815,8 +819,18 @@ GUI хранит его в Secret Service (GNOME Keyring) через новый 
   `register` не содержит `local`, sudoers `env_keep` без секретов, проверка
   pid по exe, валидация журнала маршрута), Go-тесты
   `TestResolveStateFilePathIn` и `TestPacketSenderStopDropsQueued` (очередь не
-  досылается после Stop), GUI-тесты на сброс хвоста stdout и лимит буфера.
-  Итог: `make test` — go test ok, **44 passed** (pytest), `bash -n`/`py_compile`.
+  досылается после Stop), GUI-тесты на сброс хвоста stdout и лимит буфера,
+  `tests/test_gui_location_default.py` (старт без выбора локации, проброс
+  `--country`/`--city`, автопункт списков, разбор `auto-selected`).
+  Итог: `make test` — go test ok, **53 passed** (pytest), `bash -n`/`py_compile`.
+- **Автолокация**: старт GUI без выбранной страны/города больше не блокируется
+  (запрет был добавлен в `fddea9a` по пункту §5.5.7 и мешал поведению CLI).
+  Оба списка начинают с `🌐 Auto — best location`; при пустом выборе движку не
+  передаются `--country`/`--city`, и `getProviderSpec` берёт локацию с
+  наибольшим `ProviderCount`; разрешённую локацию GUI показывает в подписи
+  (строки `auto-selected` / `city matched` из stdout). Попутно `Makefile`
+  выбирает интерпретатор с pytest (`PYTHON ?= …`) — на машинах, где первый
+  `python3` в `PATH` (Homebrew) идёт без pytest, `make test` падал.
 
 ## 9. Что осталось (не входило в эту итерацию)
 

@@ -23,6 +23,20 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 # session (a stats line every 10 s is thousands of lines per day).
 LOG_BUFFER_MAX_CHARS = 400_000
 
+# Both location combos start with this entry. With no country and no city the
+# engine picks the location with the most providers on its own
+# (getProviderSpec in cmd/urnetwork-vpn/main.go), so Start works without any
+# choice — the same behaviour the CLI has always had.
+AUTO_LOCATION_LABEL = "🌐 Auto — best location"
+AUTO_LOCATION_TOOLTIP = (
+    "Auto lets the engine choose the exit location with the most providers")
+
+# The engine reports the location it resolved on stdout, e.g.
+#   auto-selected "Netherlands" (country), provider count 400
+#   city matched "Amsterdam", provider count 123
+AUTO_SELECTED_RE = re.compile(r'^auto-selected "([^"]+)" \((\w+)\)')
+MATCHED_LOCATION_RE = re.compile(r'^(city|country|region) matched "([^"]+)"')
+
 # The TUN engine needs root for the TUN device and routes, but the GUI is
 # started from a desktop entry without a TTY, so sudo cannot prompt by itself.
 # SUDO_ASKPASS points sudo at a helper that opens its own terminal window; it
@@ -286,16 +300,17 @@ class URnetworkGUI:
         loc_vbox.set_margin_end(8)
         loc_frame.add(loc_vbox)
 
-        loc_label = Gtk.Label(label="Exit location")
-        loc_label.get_style_context().add_class("label")
-        loc_vbox.pack_start(loc_label, False, False, 0)
+        self.loc_label = Gtk.Label(label="Exit location")
+        self.loc_label.get_style_context().add_class("label")
+        loc_vbox.pack_start(self.loc_label, False, False, 0)
 
         country_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         country_row.pack_start(Gtk.Label(label="Country:", width_chars=8), False, False, 0)
         self.country_combo = Gtk.ComboBoxText()
         self.country_combo.set_entry_text_column(0)
-        self.country_combo.append("", "")
+        self.country_combo.append("", AUTO_LOCATION_LABEL)
         self.country_combo.set_active(0)
+        self.country_combo.set_tooltip_text(AUTO_LOCATION_TOOLTIP)
         country_row.pack_start(self.country_combo, True, True, 0)
         loc_vbox.pack_start(country_row, False, False, 0)
 
@@ -303,8 +318,9 @@ class URnetworkGUI:
         city_row.pack_start(Gtk.Label(label="City:", width_chars=8), False, False, 0)
         self.city_combo = Gtk.ComboBoxText()
         self.city_combo.set_entry_text_column(0)
-        self.city_combo.append("", "")
+        self.city_combo.append("", AUTO_LOCATION_LABEL)
         self.city_combo.set_active(0)
+        self.city_combo.set_tooltip_text(AUTO_LOCATION_TOOLTIP)
         city_row.pack_start(self.city_combo, True, True, 0)
         loc_vbox.pack_start(city_row, False, False, 0)
 
@@ -555,20 +571,29 @@ class URnetworkGUI:
                     cities.append(s)
         return countries, regions, cities
 
+    def _fill_location_combo(self, combo, values, keep_id):
+        """Refill a location combo: auto entry first, then the loaded values.
+
+        The previously selected value is restored when it is still offered, so
+        reloading locations does not silently reset the choice to auto.
+        """
+        combo.remove_all()
+        combo.append("", AUTO_LOCATION_LABEL)
+        active = 0
+        for index, value in enumerate(values, start=1):
+            combo.append(value, value)
+            if keep_id and value == keep_id:
+                active = index
+        combo.set_active(active)
+
     def populate_locations(self, countries, regions, cities):
-        self.country_combo.remove_all()
-        self.country_combo.append("", "")
-        for c in countries:
-            self.country_combo.append(c, c)
-        self.country_combo.set_active(0)
+        self._fill_location_combo(
+            self.country_combo, countries, self.country_combo.get_active_id() or "")
+        self._fill_location_combo(
+            self.city_combo, cities, self.city_combo.get_active_id() or "")
 
-        self.city_combo.remove_all()
-        self.city_combo.append("", "")
-        for c in cities:
-            self.city_combo.append(c, c)
-        self.city_combo.set_active(0)
-
-        self.log("✓ Locations loaded: {} countries, {} cities".format(len(countries), len(cities)))
+        self.log("✓ Locations loaded: {} countries, {} cities".format(
+            len(countries), len(cities)))
 
     def fetch_locations(self):
         def _run():
@@ -629,14 +654,36 @@ class URnetworkGUI:
         else:
             self.start()
 
+    def _selected_location(self):
+        """(country, city) from the combos; empty strings mean "let the engine decide".
+
+        The ids are the real location names; the auto entry has an empty id and
+        a human-readable label, so the label never leaks into the engine args.
+        """
+        country = (self.country_combo.get_active_id() or "").strip()
+        city = (self.city_combo.get_active_id() or "").strip()
+        return country, city
+
+    def set_location_hint(self, name, kind, auto=False):
+        """Show the exit location the engine actually resolved."""
+        text = "Exit location: {} ({})".format(name, kind)
+        if auto:
+            text += " — auto"
+        try:
+            self.loc_label.set_text(text)
+        except AttributeError:
+            pass
+        self._write_log_line("location selected: {} ({}){}".format(
+            name, kind, " [auto]" if auto else ""))
+
     def start(self):
         if self.running or self.process:
             return
-        country = self.country_combo.get_active_text() or ""
-        city = self.city_combo.get_active_text() or ""
-        if not country and not city:
-            self.log("⚠  No exit location selected — load locations and choose Country/City first")
-            return
+        country, city = self._selected_location()
+        if country or city:
+            self.log("📍 Exit location: " + (city or country))
+        else:
+            self.log("🌐 Auto: connecting to the best location (most providers)")
 
         self.save_credentials()
         env = os.environ.copy()
@@ -807,6 +854,13 @@ class URnetworkGUI:
             if not self.connected:
                 self.connected = True
                 GLib.idle_add(self.set_connected, True)
+        auto = AUTO_SELECTED_RE.match(text)
+        if auto:
+            GLib.idle_add(self.set_location_hint, auto.group(1), auto.group(2), True)
+        else:
+            matched = MATCHED_LOCATION_RE.match(text)
+            if matched:
+                GLib.idle_add(self.set_location_hint, matched.group(2), matched.group(1), False)
         self._log_stream_line("[proc] ", text)
 
     def on_output(self, source, condition=None):

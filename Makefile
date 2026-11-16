@@ -10,6 +10,11 @@ GO ?= $(shell if /usr/local/go/bin/go version >/dev/null 2>&1; \
 GOTOOLCHAIN ?= go1.26.0
 GOCACHE     ?= /tmp/urnetwork-go-cache
 BUILD_DIR   ?= build
+# Use an interpreter that actually has pytest: on some machines the first
+# python3 in PATH is a Homebrew build without it.  Override with: make PYTHON=...
+PYTHON      ?= $(shell for p in python3 /usr/bin/python3 python; do \
+                  command -v $$p >/dev/null 2>&1 && $$p -c 'import pytest' 2>/dev/null \
+                  && { echo $$p; break; }; done)
 # Position-independent executables with RELRO keep the Debian package clean
 # (lintian hardening checks) and are smaller because debug info is dropped.
 GO_BUILD_FLAGS ?= -trimpath -buildmode=pie
@@ -44,7 +49,7 @@ test-go:
 	cd cmd/urnetwork-vpn && $(GO) test -timeout 120s ./...
 
 test-gui:
-	python3 -m pytest tests -q
+	$(PYTHON) -m pytest tests -q
 
 test-scripts:
 	bash -n scripts/urnetwork-connect.sh
@@ -53,7 +58,7 @@ test-scripts:
 	bash -n scripts/install-nopasswd.sh
 	bash -n scripts/install-desktop-entry.sh
 	bash -n scripts/build-deb.sh
-	python3 -m py_compile scripts/urnetwork-credentials.py
+	$(PYTHON) -m py_compile scripts/urnetwork-credentials.py
 
 fmt:
 	gofmt -w cmd/urnetwork-vpn lib/proxy/socks lib/proxy/tun.go \

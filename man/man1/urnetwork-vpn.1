@@ -1,4 +1,4 @@
-.TH URNETWORK-VPN 1 "2026-11-04" "urnetwork-client 0.1.1" "User Commands"
+.TH URNETWORK-VPN 1 "2026-11-04" "urnetwork-client 0.1.2" "User Commands"
 .SH NAME
 urnetwork-vpn \- URnetwork TUN engine
 .SH SYNOPSIS
@@ -39,7 +39,11 @@ Password (env
 Deprecated provider selector.
 .TP
 .B --country NAME
-Exit country.
+Exit country.  When neither
+.B --country
+nor
+.B --city
+is given, the location with the most providers is selected automatically.
 .TP
 .B --city NAME
 Exit city.

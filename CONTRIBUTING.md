@@ -4,7 +4,7 @@
 
 ```bash
 make build        # build/urnetwork-vpn, build/socksproxy
-make test         # go test + pytest (44) + bash -n + py_compile
+make test         # go test + pytest (53) + bash -n + py_compile
 make vet          # go vet
 make fmt          # gofmt
 make deb          # dist/urnetwork-client_<версия>_<arch>.deb (нужен build)
